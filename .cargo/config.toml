@@ -59,3 +59,40 @@ rustflags = [
     "-C", "relocation-model=static",
     "-C", "force-frame-pointers=yes",
 ]
+
+# aarch64-apple-darwin — the one target where goish is NOT bare-metal.
+#
+# Every flag the Linux blocks carry is dropped, and each for a reason
+# that is a property of the platform rather than a preference:
+#
+#   * `-nostartfiles` — there is no crt0 to suppress. Mach-O executables
+#     enter through `LC_MAIN`, which dyld resolves to `_main` after it
+#     has already initialised libSystem.
+#   * `-nodefaultlibs` — libSystem is the system-call interface on
+#     Darwin, not an optional convenience. Go links it too, and calls
+#     through it rather than issuing `svc`
+#     (`runtime/sys_darwin_arm64.s:490-566`, the `libcCall` trampolines).
+#   * `-static` — Apple ships no static libSystem and does not support
+#     statically linked userland binaries.
+#   * `--no-dynamic-linker` — ld64 rejects the flag outright.
+#   * `relocation-model=static` — PIE is mandatory on arm64 macOS.
+#
+# So the README's "no glibc, no ld.so, statically linked" claim is a
+# Linux claim. It survives on both Linux targets, including arm64, and
+# it cannot survive here. That concession is what buys native execution
+# on the development machine.
+#
+# `force-frame-pointers` is the one flag that carries over, and on this
+# target it is close to free: AAPCS64 and Apple's own ABI already
+# mandate a frame record at `[x29]`/`[x29+8]`, which is the same shape
+# the SIGSEGV walker reads for `[rbp]`/`[rbp+8]`.
+#
+# This target is NOT the `[build]` default — that stays pinned to
+# x86_64-unknown-linux-gnu so the bare-metal rustflags above cannot leak
+# into `goish-macros`. Since the host tuple IS aarch64-apple-darwin,
+# this block does leak into proc-macro builds; `force-frame-pointers` is
+# harmless to a proc macro. Darwin builds pass `--target` explicitly.
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-C", "force-frame-pointers=yes",
+]
