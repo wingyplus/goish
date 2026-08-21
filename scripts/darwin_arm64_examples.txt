@@ -1,0 +1,21 @@
+# Examples known green on aarch64-apple-darwin, one per line.
+#
+# A ratchet in the same spirit as scripts/lint_baseline.json and
+# scripts/linux_arm64_examples.txt: it only grows, and a milestone is
+# not done until its examples are in here and passing. `--examples` is
+# never used for this target — a full build is tens of GiB of binaries
+# and most of it cannot work yet.
+#
+# M1 (boot): dyld's `main`, args, flags, mheap and mcentral all run.
+# The scheduler does not — the staged `__goish_rt0` calls the user main
+# directly on the OS stack, so anything that parks a goroutine is out of
+# scope until M5 lands `gogo`. Signals, threads, time, entropy and the
+# netpoller are M3/M4/M6/M8/M9.
+#
+# Two exclusions that are easy to get wrong and produce no link error:
+#
+#   * anything using `goish::import!` — `__run_pkg_inits` is a no-op on
+#     this target until M10, so port `init()`s silently do not run.
+#   * anything that blocks on a channel, a WaitGroup or a contended
+#     Mutex — `current_g()` is None, so it fatals rather than parking.
+hello

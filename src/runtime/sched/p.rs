@@ -403,7 +403,7 @@ impl P {
     /// Mirrors `runqput` (proc.go:7058). Executed only by the owner P.
     #[inline(never)]
     #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     pub unsafe fn runqput(&self, gp: NonNull<G>, next: bool) {
         let mut gp_ptr = gp.as_ptr();
 
@@ -452,7 +452,7 @@ impl P {
     /// Mirrors `runqputslow` (proc.go:7104).
     #[inline(never)]
     #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     fn runqputslow(&self, gp: NonNull<G>, h: u32, t: u32) -> bool {
         const HALF: usize = LOCAL_RUNQ_SIZE / 2;
         let mut batch: [*mut G; HALF + 1] = [core::ptr::null_mut(); HALF + 1];
@@ -482,7 +482,7 @@ impl P {
     /// Mirrors `runqget` (proc.go:7178). Executed only by the owner P.
     #[inline(never)]
     #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     pub unsafe fn runqget(&self) -> Option<NonNull<G>> {
         let next = self.runnext.load(Ordering::Acquire);
         if !next.is_null() {
@@ -604,7 +604,7 @@ impl P {
     /// bound to the destination P).
     #[inline(never)]
     #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     pub unsafe fn runqgrab(
         &self,
         dst: *mut [*mut G; LOCAL_RUNQ_SIZE],
@@ -687,7 +687,7 @@ impl P {
     /// `self.runqtail` is what makes the SPMC ring lock-free.
     #[inline(never)]
     #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     pub unsafe fn runqsteal(
         &self,
         target: &P,

@@ -23,6 +23,9 @@ SCOPE     ?= src
 ARM64_TARGET    ?= aarch64-unknown-linux-gnu
 ARM64_ALLOWLIST ?= scripts/linux_arm64_examples.txt
 
+DARWIN_TARGET    ?= aarch64-apple-darwin
+DARWIN_ALLOWLIST ?= scripts/darwin_arm64_examples.txt
+
 # `cargo` on PATH is not necessarily the rustup shim, and only the rustup
 # toolchain has the cross targets. A Homebrew rust installs to
 # /opt/homebrew/bin, comes first on PATH, and ships ONLY the host std —
@@ -71,7 +74,7 @@ endif
 
 .PHONY: all build e2e e2e-full e2e-build e2e-quick e2e-clean clean help \
         lint lint-new lint-update anchors manifests ifaces split-brain \
-        build-arm64 run-arm64
+        build-arm64 run-arm64 build-darwin run-darwin
 
 help:
 	@echo "goish-v1 make targets:"
@@ -93,6 +96,9 @@ help:
 	@echo "  build-arm64   build the aarch64-unknown-linux-gnu allowlist"
 	@echo "                (scripts/linux_arm64_examples.txt)"
 	@echo "  run-arm64     build-arm64 + run each entry under linux/arm64"
+	@echo "  build-darwin  build the aarch64-apple-darwin allowlist"
+	@echo "                (scripts/darwin_arm64_examples.txt)"
+	@echo "  run-darwin    build-darwin + run each entry natively on macOS"
 	@echo
 	@echo "Knobs (env or make var):"
 	@echo "  LOOPS=N       force uniform iterations per example (disables tiers)"
@@ -152,12 +158,38 @@ run-arm64: build-arm64
 			debian:bookworm-slim "./$$e" && echo "  [ok]" || echo "  [FAIL]"; \
 	done
 
-# FILTER already chooses which examples the runner executes. Apply the same
-# selection before compilation so focused package checks do not build hundreds
-# of unrelated static binaries. With no FILTER, the full build is unchanged.
-e2e-build:
-	@bash scripts/e2e_build_test.sh
-	@FILTER='$(FILTER)' $(CROSS_ENV) $(HOST_LINKER) bash scripts/e2e_build.sh $(if $(CROSS_ENV),$(CARGO_CROSS),$(CARGO))
+# ─── aarch64-apple-darwin ─────────────────────────────────────────────
+#
+# The only target where goish is not bare-metal: Mach-O enters through
+# LC_MAIN, libSystem is the syscall interface, and the binary is a PIE
+# linked against libSystem.B.dylib. See the block in .cargo/config.toml.
+#
+# Allowlist-driven for the same reason as arm64 Linux, and no cross
+# anything: on an Apple Silicon host this is the native target, so
+# `run-darwin` executes the real binary on the real kernel. It is the
+# only gate in the tree that needs neither docker nor emulation.
+DARWIN_EXAMPLES := $(shell grep -v '^\#' $(DARWIN_ALLOWLIST) | grep -v '^$$')
+
+.PHONY: darwin-preflight
+darwin-preflight:
+	@[ "$$(uname -s)" = "Darwin" ] || { \
+		echo "goish: build-darwin needs a macOS host (aarch64-apple-darwin"; \
+		echo "       links against the SDK's libSystem)."; \
+		exit 1; }
+	@rustup target list --installed 2>/dev/null | grep -qx '$(DARWIN_TARGET)' || { \
+		echo "goish: the $(DARWIN_TARGET) std is not installed."; \
+		echo "       run: rustup target add $(DARWIN_TARGET)"; \
+		exit 1; }
+
+build-darwin: darwin-preflight
+	$(CARGO_CROSS) build --target $(DARWIN_TARGET) \
+		$(foreach e,$(DARWIN_EXAMPLES),--example $(e))
+
+run-darwin: build-darwin
+	@for e in $(DARWIN_EXAMPLES); do \
+		printf '%-40s' "$$e"; \
+		./target/$(DARWIN_TARGET)/$(PROFILE)/examples/$$e && echo "  [ok]" || echo "  [FAIL]"; \
+	done
 
 e2e: e2e-build
 	@$(if $(LOOPS),LOOPS=$(LOOPS),) \

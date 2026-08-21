@@ -365,6 +365,7 @@ pub fn init() {
 // order is "imported-packages-first" because the linker walks the
 // dependency graph when building. Within a single crate, declaration
 // order is preserved.
+#[cfg(not(target_os = "macos"))]
 extern "C" {
     static __init_array_start: extern "C" fn();
     static __init_array_end: extern "C" fn();
@@ -390,6 +391,39 @@ pub mod __select_spin {
     pub use crate::runtime::spin::{raw_lock, raw_unlock};
 }
 
+/// Darwin: no `.init_array`, and no walk. **This is a real gap, not a
+/// portability detail** — every `goish::import! { … }` block's port
+/// `init()` silently does not run on this target, so a port that
+/// registers a codec, a hash or an interface impl at init time will
+/// behave as though the registration never happened rather than
+/// failing to link.
+///
+/// Two Mach-O facts make the ELF mechanism unavailable, and only the
+/// first is about the section name:
+///
+///   * `.init_array` is not a well-formed Mach-O section specifier
+///     (Mach-O wants `"__SEGMENT,__section"`), and
+///   * ld64 emits no `__init_array_start` / `__init_array_end` bound
+///     symbols to walk between. That convention is System V's rule for
+///     section names that are valid C identifiers and has no Mach-O
+///     counterpart.
+///
+/// M10 supplies the real version: a private section walked explicitly
+/// via `getsectiondata(&_mh_execute_header, …)`.
+///
+/// **`__DATA,__mod_init_func` is the wrong answer and is worth naming
+/// so it is not reached for.** dyld runs those before `main` — before
+/// `goish::init()` and before the allocator is online — so a port
+/// `init()` that allocates would fault before goish had booted.
+///
+/// Until M10, every example using `goish::import!` must stay off the
+/// Darwin allowlist. The failure mode is missing initialisation, not a
+/// link error, which is exactly why it is written down here.
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub fn __run_pkg_inits() {}
+
+#[cfg(not(target_os = "macos"))]
 #[doc(hidden)]
 pub fn __run_pkg_inits() {
     // SAFETY: `__init_array_*` symbols come from the linker; the

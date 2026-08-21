@@ -36,6 +36,13 @@ mod preempt_asm_amd64;
 #[cfg(target_arch = "aarch64")]
 mod preempt_asm_arm64;
 pub mod rand;
+// The staged darwin/arm64 boot. A separate function under the same
+// `__goish_rt0` symbol rather than a third `#[cfg]` arm inside the one
+// below — see the file header.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod rt0_darwin;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use rt0_darwin::__goish_rt0;
 pub mod rt_section;
 pub mod sched;
 pub mod segv;
@@ -659,6 +666,11 @@ pub fn FuncForPC(pc: crate::types::uintptr) -> Option<Func> {
 /// loads them into rdi/rsi per SysV, then `call`s here.
 ///
 /// `extern "C"` so the asm stub can call us with the C ABI.
+///
+/// Linux only. Darwin enters through `main` with a different signature
+/// (it is handed `envp`) and runs a much shorter sequence — see
+/// `runtime/rt0_darwin.rs`.
+#[cfg(target_os = "linux")]
 #[no_mangle]
 pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     // Stash argc/argv so os::Args() can decode them lazily on first use.

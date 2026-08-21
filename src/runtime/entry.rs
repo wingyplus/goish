@@ -23,7 +23,10 @@
 // `#[macro_export]` macros with the same name, which is not a thing.
 // The arms below are the whole of the divergence.
 
-/// The ELF entry stub. Expanded once, by `#[goish::main]`.
+/// The process entry stub. Expanded once, by `#[goish::main]`.
+///
+/// Two of the three arms are ELF `_start` stubs. The third is not a
+/// stub at all — see the Darwin arm below.
 ///
 /// Both arms do the same four things: recover `argc`/`argv` from the
 /// kernel-supplied stack, zero the frame-pointer register so a
@@ -83,5 +86,56 @@ macro_rules! __goish_entry {
             "    bl __goish_rt0",
             "    brk #0",
         );
+        // ─── Darwin: not an entry stub, an ordinary `main` ────────────
+        //
+        // Mach-O executables do not have a `_start` goish could supply.
+        // dyld enters through the `LC_MAIN` load command, and by the
+        // time it does, libSystem is initialised and the stack is a C
+        // stack rather than the raw kernel-supplied vector the ELF
+        // stubs above unpack. So there is nothing to write in assembly
+        // and nothing to align: the entry point is a C `main`, with the
+        // arguments already in registers.
+        //
+        // Darwin's `main` takes **four** parameters, not three. The
+        // fourth, conventionally `apple`, is a NULL-terminated vector
+        // dyld appends carrying the executable path and some
+        // loader-internal key=value pairs. goish ignores it; it is
+        // named here because omitting a parameter from an `extern "C"`
+        // declaration that the caller does pass is exactly the kind of
+        // thing that works until it does not.
+        //
+        // **`envp` is the reason this arm has to exist at all**, rather
+        // than a one-line shim. On Linux the environment is recovered
+        // from the stack as `argv + argc + 1`, which is an ELF auxv
+        // layout fact and is simply false here. Darwin hands it over as
+        // an argument, so `__goish_rt0` on this target takes it as one.
+        //
+        // Two contracts to hold, both cheap and both silent when
+        // broken:
+        //
+        //   * `main` must **not** be `-> !`. dyld calls it expecting a
+        //     normal C function and uses the return value as the exit
+        //     status. `__goish_rt0` diverges, so the `i32` return type
+        //     is a declaration about the ABI rather than a value that
+        //     is ever produced.
+        //   * The symbol must be `main`, not `_main`. Mach-O prefixes
+        //     symbols with an underscore at the *object* level, and
+        //     `#[no_mangle]` already applies it — spelling it here
+        //     would produce `__main`.
+        //
+        // Emitted into the user's crate for the same reason `_start` is:
+        // the entry symbol has to be in the final binary's own object
+        // file, not in the rlib, where nothing references it and the
+        // linker has no reason to pull it in.
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[no_mangle]
+        pub extern "C" fn main(
+            argc: ::core::ffi::c_int,
+            argv: *const *const u8,
+            envp: *const *const u8,
+            _apple: *const *const u8,
+        ) -> ::core::ffi::c_int {
+            ::goish::runtime::__goish_rt0(argc as i32, argv, envp)
+        }
     };
 }

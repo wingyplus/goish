@@ -17,7 +17,14 @@
 //   * A Mach-O section name is a `"__SEGMENT,__section"` pair, so the
 //     bare `"goish_rt_text"` is not merely unconventional there — rustc
 //     rejects it outright ("invalid Mach-O section specifier"). The
-//     Darwin spelling is `"__TEXT,__goish_rt_text"`.
+//     Darwin spelling is
+//     `"__TEXT,__goish_rt_text,regular,pure_instructions"`. The two
+//     trailing attributes are not decoration: without them ld64 treats
+//     the section as data, and since the functions placed there carry
+//     unwind information it warns that "symbols ... have unwind
+//     information, but it's not a code section". A section of runtime
+//     code that the linker does not believe is code is precisely the
+//     wrong footing for the M8 PC-range check that will read it.
 //   * ld64 generates no `__start_`/`__stop_` bound symbols at all. That
 //     convention is a System V rule about section names that happen to
 //     be valid C identifiers; it has no Mach-O counterpart. The bounds
@@ -119,7 +126,7 @@ pub fn section_bounds() -> (u64, u64, u64) {
 /// safe to keep — it's just a marker.
 #[inline(never)]
 #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 #[no_mangle]
 pub extern "C" fn __goish_rt_text_anchor() -> u64 {
     // Reference our own address to defeat dead-code elimination of

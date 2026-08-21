@@ -324,7 +324,7 @@ pub fn is_tls_ready() -> bool {
 /// the RMW always hits the M we are executing on *at that instant*.
 #[inline(never)]
 #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub fn acquirem() {
     if !is_tls_ready() {
         return;
@@ -341,7 +341,7 @@ pub fn acquirem() {
 /// the previous value feeds the underflow tripwire.
 #[inline(never)]
 #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub fn releasem() {
     if !is_tls_ready() {
         return;

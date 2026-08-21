@@ -333,7 +333,7 @@ fn is_in_mcall_asm(pc: u64) -> bool {
 #[no_mangle]
 #[inline(never)]
 #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub(super) extern "C" fn goish_async_preempt2() {
     // **Yield via Gosched, not gopark+commit.**
     //

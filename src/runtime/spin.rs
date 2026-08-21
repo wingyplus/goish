@@ -104,7 +104,7 @@ fn drop_m_locks() {
 // preempt.go:420.
 #[inline(never)]
 #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn cooperative_preempt_check() {
     if !crate::runtime::flags::COOP_PREEMPT.load(core::sync::atomic::Ordering::Relaxed) {
         return;
@@ -195,7 +195,7 @@ impl<T> SpinLock<T> {
     /// is inside the core CAS.
     #[inline(never)]
     #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn lock(&self) -> Guard<'_, T> {
         bump_m_locks();
@@ -244,7 +244,7 @@ impl<T> SpinLock<T> {
 /// `raw_unlock(atom)` exactly once before the SpinLock is dropped.
 #[inline(never)]
 #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 #[cfg_attr(debug_assertions, track_caller)]
 pub unsafe fn raw_lock(atom: *const AtomicBool) {
     // Bump m.locks BEFORE the CAS — same reasoning as `SpinLock::lock`:
@@ -265,7 +265,7 @@ pub unsafe fn raw_lock(atom: *const AtomicBool) {
 /// `raw_lock` call.
 #[inline(never)]
 #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub unsafe fn raw_unlock(atom: *const AtomicBool) {
     // **Order reversed in M17b-ε debug fix**: release the atom FIRST,
     // then decrement `m.locks`. Same window-closure reasoning as
@@ -318,7 +318,7 @@ impl<'a, T> Drop for Guard<'a, T> {
     /// section.
     #[inline(never)]
     #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
-    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     fn drop(&mut self) {
         // Release atom FIRST, then decrement m.locks (M17b-ε debug
         // fix — see `raw_unlock` for the full rationale). Closes the
