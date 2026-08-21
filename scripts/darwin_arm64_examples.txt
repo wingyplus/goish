@@ -18,4 +18,37 @@
 #     this target until M10, so port `init()`s silently do not run.
 #   * anything that blocks on a channel, a WaitGroup or a contended
 #     Mutex — `current_g()` is None, so it fatals rather than parking.
+#
+# Anything that reaches `current_m()` is also out until M4 — that turns
+# out to be the real wall, and it is a loud one: the binary prints
+# "goish: the darwin/arm64 thread pointer is not implemented yet (M4):
+# slot0 / current_m" and exits 2. `defer_smoke`, `aes_smoke`,
+# `asn1_smoke` and `atomic_value_smoke` all stop there today.
+
+# boot
 hello
+
+# allocator — mheap and mcentral come online in M1 on this target,
+# because dlmalloc is gone and both now need nothing but Mmap.
+alloc_smoke
+alloc_mheap
+
+# build identifiers, now cfg-derived rather than pinned to amd64/linux
+runtime_goos_goarch_smoke
+runtime_stubs_smoke
+
+# pure computation over the allocator: hashes, codecs, sorting, bufio.
+# None of these needs a thread, a goroutine, a signal, a clock or a
+# socket, which is exactly why they are the set that works at M1.
+adler32_smoke
+ascii85_smoke
+base32_smoke
+base64_stream_smoke
+binary_varint_smoke
+bufio_smoke
+bytes_lib_smoke
+cipher_ctr_smoke
+cmp_smoke
+crc32_smoke
+crc64_smoke
+sort_smoke

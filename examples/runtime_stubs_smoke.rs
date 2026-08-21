@@ -66,7 +66,14 @@ fn main() {
 
     // 6. Existing constants still readable (regression).
     {
-        if runtime::GOOS == "linux" && runtime::GOARCH == "amd64" && runtime::Compiler == "goish" {
+        // Derived from cfg!, not pinned: goish builds for more than
+        // one target now, and GOARCH is what port code branches on.
+        let want_goos = if cfg!(target_os = "macos") { "darwin" } else { "linux" };
+        let want_goarch = if cfg!(target_arch = "aarch64") { "arm64" } else { "amd64" };
+        if runtime::GOOS == want_goos
+            && runtime::GOARCH == want_goarch
+            && runtime::Compiler == "goish"
+        {
             fmt::Println!("[ 6] GOOS/GOARCH/Compiler      PASS");
         } else {
             fmt::Println!("[ 6] GOOS/GOARCH/Compiler      FAIL");

@@ -56,21 +56,37 @@ pub use heap::{alloc, free, mheap_alloc_pages, mheap_capacity_pages, mheap_free_
 
 // ─── GOOS / GOARCH / Compiler — Go runtime build identifiers ─────────
 //
-// Go: extern.go:397 / :401 — `const GOOS string = goos.GOOS`
+// Go: extern.go:391 / :395 — `const GOOS string = goos.GOOS`
 //                            `const GOARCH string = goarch.GOARCH`
 //
-// goish v1 is Linux-only, x86_64-only — these are baked at compile
-// time. Compiler is "goish" (matches the Go convention of returning
-// the build's compiler name; gc / gccgo / gollvm are the upstream
-// values).
+// Both are compile-time constants in Go too; `internal/goos` and
+// `internal/goarch` are generated per target by `go generate`, and
+// `#[cfg]` is the direct equivalent. They were literals here while
+// goish had one target, and a literal `"amd64"` on an arm64 build is
+// not a stale comment — `runtime.GOARCH` is what port code branches on.
+//
+// Compiler is "goish" (matching Go's convention of naming the build's
+// compiler; gc / gccgo / gollvm are the upstream values).
 
-/// `runtime.GOOS` (extern.go:397) — operating-system target. Always
-/// `"linux"` for goish v1.
+/// `runtime.GOOS` (extern.go:391) — operating-system target.
+#[cfg(target_os = "linux")]
 pub const GOOS: &str = "linux";
+/// `runtime.GOOS` (extern.go:391) — operating-system target.
+///
+/// `"darwin"`, not `"macos"`: Go names the OS, and `target_os` is
+/// Rust's spelling of the same thing. Port code that reads `GOOS` is
+/// reading a Go value and must see Go's string.
+#[cfg(target_os = "macos")]
+pub const GOOS: &str = "darwin";
 
-/// `runtime.GOARCH` (extern.go:401) — CPU architecture target.
-/// Always `"amd64"` for goish v1.
+/// `runtime.GOARCH` (extern.go:395) — CPU architecture target.
+#[cfg(target_arch = "x86_64")]
 pub const GOARCH: &str = "amd64";
+/// `runtime.GOARCH` (extern.go:395) — CPU architecture target.
+///
+/// `"arm64"`, not `"aarch64"` — again Go's spelling, not Rust's.
+#[cfg(target_arch = "aarch64")]
+pub const GOARCH: &str = "arm64";
 
 /// `runtime.Compiler` (extern.go:412) — name of the compiler used
 /// to build this binary. Goish reports `"goish"` to distinguish from
