@@ -1,0 +1,546 @@
+# Port goish to aarch64-apple-darwin — staged, boot-first
+
+> Every "Go does X" claim below was checked against the Go tree on this machine
+> (`$(go env GOROOT)/src`, go1.26.4). Verified citations are marked with the file and line.
+
+## Context
+
+goish is a `no_std` Rust reimplementation of Go's stdlib and runtime (271k LOC; 18k of it in
+`src/runtime` + `src/syscall`). It ships its own ELF `_start`, raw Linux syscalls, a Go-shaped
+page allocator, an M:N scheduler with stackful goroutines, an epoll netpoller, SIGURG async
+preemption and SIGSEGV backtraces.
+
+It is **x86_64-linux only, unconditionally**. A repo-wide grep finds **zero** `cfg(target_arch)`
+and **zero** `cfg(target_os)` gates in `src/` or `goish-macros/`. Syscall numbers, kernel struct
+layouts, the TLS mechanism, register names, page size and the `GOARCH` string are all
+unconditional. The port starts from no cfg infrastructure at all.
+
+The development machine is Apple Silicon (`arm64`, 16 KiB pages). The goal is an
+`aarch64-apple-darwin` build that runs here.
+
+**The x86_64-linux regression gate does run on this machine** — measured 2026-08-21, not assumed.
+The earlier reading ("no cross-linker is present, the project cannot be built or run natively")
+was wrong, and its root cause is a PATH trap: `/opt/homebrew/bin/{rustc,cargo}` shadow the rustup
+shims and ship **only** the host std, so a cross-build dies with `error[E0463]: can't find crate
+for 'core' — the x86_64-unknown-linux-gnu target may not be installed` even though `rustup target
+list --installed` shows it. Both are rustc 1.97.1, so `rustc -vV` cannot tell them apart; only
+`which -a rustc` can. `~/.cargo/bin/cargo` compiles the crate clean.
+
+Two pieces make the gate work:
+
+- **Link:** a cc-style → `ld.lld` shim around `rust-lld` from the rustup sysroot — it drops
+  `-m64`/`-nodefaultlibs`/`-nostartfiles`/`-no-pie` and unwraps `-Wl,`. (`zig cc` was tried first
+  and is a dead end: `-target x86_64-linux-gnu` rejects `-static`, and `-target x86_64-linux-musl`
+  rejects `--no-dynamic-linker` while sub-compiling a libc we never link.)
+- **Run:** `docker run --platform linux/amd64` on the local colima VM. That VM is `vmType: vz`
+  with `rosetta: false`, so amd64 is **qemu-user binfmt emulation**, not Rosetta.
+
+Measured on that path: **12 probed examples all cross-link, and all 12 pass under emulation** —
+`hello` (prints `Hello, World!`, exit 0), `alloc_smoke`, `alloc_mheap`, `chan_unbuffered`,
+`chan_buffered`, `chan_select_stress`, `conn_deadline_smoke`, `conn_drop_no_leak`,
+`sigaltstack_offline_proof`, `preempt_sysmon`, `spawn_density`, `x509_parse_smoke`. So the
+netpoller, the sigaltstack proof and sysmon preemption all survive qemu-user. One caveat, which is
+the fidelity warning below in miniature: `chan_select_stress` was **SIGKILLed (rc=137) at default
+VM memory** and passed only when the container was given `--memory=8g`.
+
+`scripts/e2e_runner.sh` itself needs **no source change** to drive this — verified by running it
+unmodified inside the container over the built subset (5 iterations, 5 pass, 0 fail). Two things
+it does need: `ARTIFACTS` pointed outside the bind-mount (the default `scripts/.e2e-artifacts`
+would be written into the repo as root), and a `FILTER` that matches exactly what was built — the
+runner enumerates targets, not binaries, so every unbuilt example is reported as `:missing` and
+counted as a failure. That is the same pressure behind the planned `e2e_runner.sh:30,80` change to
+take the allowlist as an input filter.
+
+**Two limits, both load-bearing:**
+
+- **Disk.** A full `cargo build --examples` needs ~50 GiB — each debug example is a ~47 MiB
+  static ELF and there are 595 of them. It filled this disk at example 458 of 595. Build the
+  allowlist, not `--examples`, locally.
+- **Fidelity.** qemu-user does not reproduce x86 TSO for multithreaded programs and its
+  signal/thread timing is its own; `chan_select_stress` ran 11.5 s wall / 28.9 s user, and see its
+  SIGKILL above. Claim this gate as **compile + functional smoke only**. `ubuntu-latest` CI stays the sole
+  authority for M5, M8, M12 and for anything `make e2e-full` exists to catch.
+
+The shim and the docker invocation currently live in a scratch dir. If they become the dev gate
+they belong in `scripts/` — but that adds a macOS-host dev path to a Linux-only-CI repo, which is
+a repo-shape decision, not an implementation detail.
+
+### The one thing that must be actively accepted
+
+**A static, libc-free Mach-O is impossible.** Apple removed static `crt0.o`; every macOS
+executable links `libSystem.dylib`, is loaded by dyld, and must be PIE. The README's headline
+claim — *"no `glibc`, no `ld.so` … `ldd` reports not a dynamic executable"* — cannot hold on
+Darwin. Everything else survives: no GC, no language runtime to initialize, goish's own
+scheduler, allocator and netpoller.
+
+**Go made exactly this concession**: it abandoned raw Darwin syscalls in 1.12 and routes
+everything through libSystem via `libcCall` (`runtime/sys_darwin.go`, trampolines in
+`runtime/sys_darwin_arm64.s:490-566`). Raw `svc #0x80` does function but is unsupported by Apple
+*and cannot create threads* — `bsdthread_create` requires prior pthread-runtime registration.
+Since libSystem is linked regardless, raw syscalls buy nothing. The honest framing for the
+README: goish is libc-free **on Linux**; on Darwin it is libSystem-only, matching Go itself.
+
+Following Go here is also what keeps the provenance thesis intact — Go supports darwin/arm64, so
+every line has a citable original. All 17 anchor-target files were confirmed present locally.
+
+### What is *not* a problem
+
+`src/crypto/`, `src/hash/`, `src/xxh3/`, `src/math/`, `src/bytes/`, `src/strings/`,
+`src/encoding/`, `src/compress/`, `src/reflect/`, `src/sort/`, `src/slices/` and the top-level
+`src/*.rs` contain **zero** x86 intrinsics, SIMD, cpuid or `asm!`. Every crypto primitive is
+already the scalar `_noasm`/`generic` path. `src/sync/` is pure `core::sync::atomic`. Byte order
+goes through `from_le_bytes`/`to_be_bytes` with no transmutes. The port is confined to the
+runtime, syscall and build layers, plus tooling.
+
+---
+
+## The linux/aarch64 question — opened 2026-08-21, not yet decided
+
+`plan.md`'s "Explicitly out of scope" deprioritizes `aarch64-unknown-linux-gnu` as "not the chosen
+target." A probe reopens it, because the local VM changes the arithmetic.
+
+**The colima VM is natively aarch64** — 5 cores, and its `/proc/cpuinfo` Features line carries the
+full modern set including `aes pmull sha1 sha2 sha3 sha512 lrcpc dcpop atomics bf16 i8mm` **and
+`dit`**. `docker run --platform linux/arm64` is therefore *native execution*, not emulation: none of
+the qemu-user fidelity caveats above apply to it.
+
+**The link path is proven.** The same `rust-lld` shim with `-m aarch64linux` links a `#![no_std]`
+`#![no_main]` probe against the existing Linux rustflags; `file` reports *ELF 64-bit LSB
+executable, ARM aarch64, statically linked*, and it runs in the arm64 container and exits 0. **The
+static, libc-free binary property survives** — so does the ELF section trick: the probe also
+declares `#[link_section = "goish_rt_text"]` with one `u64` slot and reads
+`__start_goish_rt_text`/`__stop_goish_rt_text`, which **ld.lld synthesizes**; it printed `bytes=8`.
+That is the measured fact the "53 `link_section` sites vanish" claim rests on.
+
+**The compile probe.** `rustup target add aarch64-unknown-linux-gnu`, that shim, the existing Linux
+rustflags. `cargo build --target aarch64-unknown-linux-gnu --example hello` fails in the `goish`
+**lib** with **41 errors across exactly 3 files** (cargo's 42nd line is its own
+"due to 41 previous errors" summary):
+
+| File | Errors | What |
+|---|---|---|
+| `src/syscall/mod.rs` | 36 | the `syscall0..6` stubs' `rax`/`rdi`/`rsi`/`rdx`/`r10`/`r8`/`r9` register constraints |
+| `src/runtime/sched/m.rs` | 3 | `lock add dword ptr fs:[{off}]` / `lock xadd`, and `mov {}, rbp` / `mov {}, rsp` |
+| `src/runtime/rand.rs` | 2 | `rdtsc` |
+
+No other file in the 271k-LOC tree raised an error — but the compile **aborted**, so what is
+proven is that nothing surfaced in the phases that ran; monomorphization and codegen never
+happened. Read it as strong corroboration of the "What is *not* a problem" section, not as proof
+the rest of the tree builds.
+
+**That is the compile tip, not the port.** The dangerous residue is the code that compiles clean and
+is *wrong at runtime*, because goish defines its own `ucontext`/`Gobuf` rather than importing libc's:
+
+- `sched/gobuf.rs` — 97 x86 register-name sites, all plain struct fields
+- `runtime/preempt.rs` — 70 sites plus **23 `REG_*` mcontext indices**
+- `runtime/segv.rs` — 15 sites plus 4 `REG_*`
+- `runtime/mod.rs` 16, `sched/grow.rs` 14, `sched/g.rs` 8, `runtime/spin.rs` 4, `sched/mod.rs` 4,
+  `sched/scheduler.rs` 3, `sched/stack.rs` 1
+
+**And the entry stub is not in the 42 at all** — `goish-macros/src/lib.rs:49`'s `global_asm!`
+(`mov rdi, [rsp]`) lives in the *example* crate, which never got compiled because the lib failed
+first. The error count grows once the lib builds. Full inventory: **14 files** carry x86 register
+names, every one of them under `src/runtime/`, `src/syscall/mod.rs`, or `goish-macros/`.
+
+**What linux/aarch64 removes that darwin/arm64 does not.** The entire OS half. ELF `.init_array`
+and `__start_`/`__stop_` section-bound symbols both exist, so **the M1 blocker and all 53
+`link_section` sites simply vanish** (measured above). futex, epoll, raw `svc #0`, `clone`,
+in-image DWARF (so `runtime/symbolize/` keeps `file:line` instead of degrading to `dladdr`), and
+the static libc-free binary all survive — the README's headline claim holds unchanged.
+
+**Page size, measured not assumed:** `getconf PAGESIZE` in the arm64 container returns **4096**
+(kernel `6.8.0-100-generic`), so **M2's page-size inversion does not arise on this VM**. Scope that
+claim to this kernel — arm64 Linux ships 4K, 16K or 64K depending on config, so a CI runner or a
+different distro can reintroduce exactly the Darwin problem. M2 stays a real milestone for
+darwin/arm64 either way.
+
+**What it does not remove.** M4 (TLS), M5 (AAPCS64 context switch, `d8`–`d15`, x30, no red zone),
+M8 (SIGURG preemption), M11 (CPU feature detection) and M12 (weak memory) apply in full. Those are
+the five hardest milestones; only their *OS* surface changes.
+
+**One genuine Linux/arm64 constraint — it is not a renumber.** Verified in the local GOROOT
+(go1.26.4): `syscall/zsysnum_linux_arm64.go` is generated from `asm-generic/unistd.h` and contains
+**no** `SYS_OPEN`, `SYS_DUP2`, `SYS_POLL`, `SYS_EPOLL_CREATE`, `SYS_FORK` or `SYS_PIPE`, all six of
+which `zsysnum_linux_amd64.go` does define. goish uses four of them today:
+
+- `SYS_OPEN` — `syscall/mod.rs:20,484`, `net/dnsconfig.rs:317` → `openat`
+- `SYS_FORK` — `syscall/mod.rs:67,503` (whose own comment notes x86_64 "still ships the legacy
+  `SYS_FORK` (57)") → `clone`. Go never uses `SYS_FORK` on *any* Linux arch:
+  `syscall/exec_linux.go:340-342` calls `rawVforkSyscall(SYS_CLONE, …)`, and `SYS_CLONE` exists on
+  both (`zsysnum_linux_arm64.go:228` = 220, `zsysnum_linux_amd64.go:63` = 56). So goish already
+  diverges from Go here on x86_64; arm64 just makes it mandatory.
+- `SYS_DUP2` — `syscall/mod.rs:70` → `dup3`
+- `SYS_POLL` — `syscall/mod.rs:1780,2095` → `ppoll`
+
+Each needs a **different call**, not a different number, so `zsysnum_linux_arm64.rs` is not a pure
+renumber of the amd64 table and the M0 syscall split has to allow for that. `Open` is the easy one
+— Go's own `syscall/syscall_linux.go:279-281` is already `openat(_AT_FDCWD, …)` on every Linux
+arch, so the port follows rather than invents.
+
+**The netpoller, by contrast, is a pure renumber.** goish already uses the modern trio —
+`SYS_EPOLL_CREATE1`/`SYS_EPOLL_CTL`/`SYS_EPOLL_PWAIT` (`syscall/mod.rs:60-62,1710,1724,1758`) — and
+all three exist on arm64 (`zsysnum_linux_arm64.go:27-29`). Note Go itself has to remap here:
+`syscall_linux_arm64.go:16` binds `EpollWait` to `SYS_EPOLL_PWAIT` because plain `epoll_wait` is
+another of the legacy calls arm64 dropped. goish landed on the right side of that by accident.
+
+**The strongest argument for taking this on.** M12 says x86 CI gives "literally zero signal" on
+weak memory and is "not a milestone without the arm64 CI job." A native aarch64 Linux target makes
+that audit runnable **on this machine, today, with zero Darwin work**. The same VM reports `dit`,
+which is precisely the feature M11 flags `crypto/subtle/dit.rs` for silently dropping.
+
+**The decision taken (2026-08-21): (b).** linux/aarch64 goes in front of darwin/arm64, so each
+milestone changes *one* variable — arch-on-Linux first, then OS-on-arm64 — instead of both at
+once. Cost, as expected: the `_GOOS_GOARCH` file-suffix scheme carries three tuples from M0 rather
+than two, and `port_lint`/`port_coverage`'s `--goos`/`--goarch` pair has to be real from the start
+rather than a later refit.
+
+### M1 on linux/aarch64 — landed
+
+`make run-arm64` prints `Hello, World!` and exits 0, from a `statically linked` ELF 64-bit LSB
+executable, ARM aarch64, run natively in the arm64 container. **The libc-free static-binary
+property survives on this target** — the concession at the top of this document is a Darwin
+concession, not an arm64 one.
+
+What runs on arm64 today: the entry stub, `args`, `flags`, the thread pointer, the dlmalloc
+bootstrap heap, `mheap`, `mcentral`, the P array, `setup_main_g0`, `symbolize::init` and the
+SIGSEGV handler install. What does not: the scheduler. `gogo` is M5, so the staged `__goish_rt0`
+calls the user main **directly on g0** — which means `current_g()` is `None` while it runs and any
+blocking primitive fatals with "outside of any goroutine" instead of parking. That is the M1
+contract here, and it is why `scripts/linux_arm64_examples.txt` starts at `hello` and not at the
+channel examples.
+
+Files added, all following the `_GOOS_GOARCH` convention:
+
+| Area | amd64 | arm64 |
+|---|---|---|
+| raw syscall instruction | `sys/sys_linux_amd64.rs` | `sys/sys_linux_arm64.rs` |
+| syscall numbers | `syscall/zsysnum_linux_amd64.rs` | `syscall/zsysnum_linux_arm64.rs` |
+| whole-function asm | `syscall/asm_linux_amd64.rs` | `syscall/asm_linux_arm64.rs` |
+| thread pointer | `sched/tls/tls_linux_amd64.rs` | `sched/tls/tls_linux_arm64.rs` |
+| context switch | `sched/gobuf_asm_amd64.rs` | `sched/gobuf_asm_arm64.rs` (M5 aborts) |
+| stack pivot | `sched/grow_asm_amd64.rs` | `sched/grow_asm_arm64.rs` (real) |
+| preempt trampoline | `runtime/preempt_asm_amd64.rs` | `runtime/preempt_asm_arm64.rs` (M8 abort) |
+| cycle counter | `runtime/cputicks/cputicks_amd64.rs` | `runtime/cputicks/cputicks_linux_arm64.rs` |
+| entry stub | `runtime/entry.rs` (both arms, see the file for why it is one file) | — |
+
+**Five findings worth carrying forward, none of which were in the plan:**
+
+1. **`compiler_builtins` pulls in glibc on aarch64.** LLVM's default "outline atomics" route every
+   atomic RMW through `__aarch64_ldadd*` helpers that pick LSE or LL/SC at runtime by calling
+   `getauxval(AT_HWCAP)`. With `-nodefaultlibs` the link fails on an undefined `getauxval`.
+   `-C target-feature=-outline-atomics` inlines the baseline `ldxr`/`stxr` sequences instead. This
+   will recur on darwin/arm64.
+2. **arm64 Linux `clone` puts TLS in x3, not x5** (`CLONE_BACKWARDS`), and Go cannot be cited for
+   it: `runtime/sys_linux_arm64.s:670-686` never passes a TLS argument, because non-cgo Go/arm64
+   keeps `g` in R28 rather than the thread pointer (`tls_arm64.s:12-18` short-circuits `load_g` on
+   `iscgo`). goish *does* use the thread pointer, so it needs `CLONE_SETTLS` where Go does not.
+   Established by experiment — a static arm64 binary cloned a thread with a magic value in x3 and
+   the child read it back out of `TPIDR_EL0`. Re-run that probe rather than re-reasoning about it.
+3. **`Gobuf`, `preempt.rs`'s `REG_*` indices and the whole `ucontext` compile fine on arm64 and are
+   wrong.** rustc does not parse inline-asm strings either, so *neither* the type checker nor the
+   error count bounds the port. Only the assembler and the linker do, and they run last.
+4. **The legacy-syscall problem is smaller than it looks and the fix is Go's.** Eleven wrappers
+   moved to their `*at` forms **on both architectures** — `Open`→`openat(AT_FDCWD, …)` and friends,
+   `Fork`→`clone(SIGCHLD, 0)`, `Poll`→`ppoll` — rather than forking per target, because that is
+   exactly what `syscall/syscall_linux.go:279-281` and `exec_linux.go:340-342` already do for every
+   Linux arch including amd64. Net effect: no per-arch wrapper file was needed at all.
+5. **`and sp, sp, #-16` does not encode.** AND (immediate) takes SP as destination but not as
+   source. Via a scratch register, and only in the entry stub.
+
+---
+
+## Verified facts that shape the plan
+
+| Claim | Verdict | Source |
+|---|---|---|
+| Go calls libSystem on Darwin, not raw syscalls | ✅ | `runtime/sys_darwin_arm64.s:490-566` (`libcCallInfo` trampolines) |
+| Threads via `pthread_create` | ✅ | `runtime/os_darwin.go:233-258` |
+| Per-thread signals via `pthread_kill` | ✅ | `runtime/os_darwin.go:489-491` (`signalM`) |
+| Futex replacement is `pthread_cond_timedwait_relative_np` | ✅ | `runtime/os_darwin.go:36-71` (`semacreate`/`semasleep`) |
+| `physPageSize` is queried, not pinned | ✅ | `runtime/os_darwin.go:148-153` (`osinit` → `getPageSize()`) |
+| `MADV_DONTNEED` is not the Darwin release path | ✅ | `runtime/mem_darwin.go:23-34` uses `_MADV_FREE_REUSABLE` (0x7) / `_MADV_FREE_REUSE` |
+| Reservations are `PROT_NONE` mmap, not `MAP_NORESERVE` | ✅ | `runtime/mem_darwin.go:57-63` (`sysReserveOS`) |
+| kqueue wake is `EVFILT_USER` + `NOTE_TRIGGER` | ✅ | `runtime/netpoll_kqueue_event.go:18,40-41` (a pipe variant exists for other BSDs) |
+| **x18 is forbidden, not merely reserved** | ✅ | `runtime/mkpreempt.go:573` — *"R18 is not used, skip"*; no `R18` anywhere in `preempt_arm64.s` |
+| ~~macOS arm64 has a 47-bit VA, geometry must be re-derived~~ | ❌ **WRONG** | `runtime/malloc.go:213` — `heapAddrBits` is **48** on darwin/arm64; only **ios**/arm64 drops to 40. `malloc.go:314`: `arenaBaseOffset = 0` on arm64. **`mheap/consts.rs` ports unchanged.** |
+| ~~`TPIDRRO_EL0` is read-only, so reads must go through TSD calls~~ | ❌ **WRONG** | `runtime/tls_arm64.h:22-25` + `tls_arm64.s:21-26` — Go *reads* `MRS TPIDRRO_EL0`, masks the low 3 bits ("Darwin sometimes returns unaligned pointers"), and indexes by a `pthread_key`-derived offset. Read-only applies to the *slot allocation*, not the read. |
+| ~~`posix_spawn` is the correct Darwin `os/exec` answer~~ | ❌ **WRONG** | `syscall/exec_libc2.go:55,85` — Go uses `libc_fork` + exec on Darwin, same shape as Linux |
+
+---
+
+## The M1 blocker found during design review
+
+**Mach-O has neither `.init_array` nor `__start_`/`__stop_` section-bound symbols.**
+
+- `src/lib.rs:359-377` — `__run_pkg_inits()` walks `extern { static __init_array_start; static
+  __init_array_end; }`, ELF linker-provided symbols, over `#[link_section = ".init_array"]` slots.
+- `src/runtime/rt_section.rs:39-41` — `__start_goish_rt_text` / `__stop_goish_rt_text`, relying on
+  the SysV rule that a section named as a valid C identifier gets auto-generated bound symbols.
+
+ld64 generates no such symbols, and `#[link_section = "goish_rt_text"]` is not a well-formed
+Mach-O section spec (Mach-O requires `"__SEGMENT,__section"`). There are **53 `link_section` sites
+across 9 files** — `scheduler.rs` ×22, `gochan.rs` ×10, `spin.rs` ×8, `sched/p.rs` ×5,
+`rt_section.rs` ×4, `goish-macros` ×3, `lib.rs` ×2, `sched/m.rs` ×2, `preempt.rs` ×1 — every one a
+link-time failure.
+
+This lands **in M1**, because `#[goish::main]` unconditionally injects `::goish::__run_pkg_inits()`
+into every user main. M1's answer: a `#[cfg(target_os = "macos")]` no-op `__run_pkg_inits`, cfg'd
+section names (`"__TEXT,__goish_rt_text"`), and `is_in_runtime()` returning `false` on Darwin —
+safe, because M1 installs no signal handlers. Real section bounds come later via
+`getsectiondata(&_mh_execute_header, …)`.
+
+**Ordering trap for M10:** do *not* map `goish::import!` onto `__DATA,__mod_init_func`. dyld runs
+those before `main` — before `goish::init()` and before the allocator is up, so a port `init()`
+that allocates would fault. Keep a private section and walk it explicitly.
+
+---
+
+## Milestone 0 — cfg scaffolding (lands entirely on the x86 path)
+
+**Governing principle: separate files over inline `#[cfg]` arms.** A cfg'd-out file still exists
+on disk, so `anchor_check.py`, `port_lint.py` and `port_coverage.py` — all source-parsing, not
+compiling — see arm64/Darwin code from a Linux host and vice versa. Go solved this with
+`_GOOS_GOARCH.go` suffixes, and `src/internal/syscall/unix/sysnum_linux_amd64.rs` shows the repo
+has already adopted the convention.
+
+**Prerequisite: Go 1.25.5.** `anchor_check.py` accepts an `sdk <ver>` spec; the local toolchain is
+1.26.4 and the pinned SDK is absent.
+
+**`goishlint` is closed source and is the maintainer's to run.** `port_lint.py:binary()` wants
+`$GOISHLINT` or `../goishlint/target/release/goishlint`; neither exists in an agent's environment,
+and `provenance.yml:22-23` states outright that the linter "is a separate binary and is not in this
+workflow" — so CI does not run it either. Consequence for the file-move protocol below: **the
+ratchet cannot be the gate an implementer checks.** Replace it with an invariant that is
+independently verifiable without the binary — every move lands as a commit `git diff -M --stat`
+reports as *pure renames, zero content lines changed* — and leave `port_lint.py --update` to the
+maintainer as a separate, reviewable step.
+
+- **`src/sys/` facade** — the *only* place raw `syscall`/`svc` instructions or `extern "C"`
+  libSystem declarations may appear. `sys_linux_amd64.rs` (the `syscall0..6` stubs moved verbatim
+  from `syscall/mod.rs:194-270`), `sys_darwin_arm64.rs`, and `consts_*` carrying `PHYS_PAGE_SIZE`.
+- **Keep goish's internal ABI as negative-errno.** `sys::write()` returns `n` or `-EAGAIN`. On
+  Linux that is the unchanged kernel return. Darwin needs **three** adapters, not one:
+  `errno_ret` (`write`/`read`/`open` → `-1` + `__error()`), `direct_ret` (`pthread_*` → positive
+  errno as the return value, errno untouched), `ptr_ret` (`mmap` → `MAP_FAILED`). Read `__error()`
+  in the same `unsafe` block with no intervening libSystem call. This one decision preserves all
+  ~96 wrappers in `src/syscall/mod.rs` and every caller; only the numeric `Errno` table is
+  per-OS — and those numbers genuinely differ (`EAGAIN` 35 vs 11), so audit literal `Errno(`
+  values across `src/os`, `src/net`, `src/io`.
+- **Split `src/syscall/mod.rs`** (2137 lines) the way Go's own `syscall` package is split:
+  `syscall_linux.rs`, `zerrors_linux_amd64.rs`, `ztypes_linux_amd64.rs`,
+  `zsysnum_linux_amd64.rs`, and Darwin siblings. Anchors: `syscall/syscall_darwin.go`,
+  `zerrors_darwin_arm64.go`, `ztypes_darwin_arm64.go`, `zsyscall_darwin_arm64.go`.
+- **`Gobuf` → parallel per-arch structs**, not renamed fields. Outside `sched/gobuf.rs` only
+  **six** sites touch its fields and all six touch `.rsp` — add `sp()`/`set_sp()` accessors and
+  convert them. A shared struct would be a lie: amd64 stores 7 GPRs + pc (SysV makes xmm
+  caller-saved, so no FP state); arm64 needs x19–x28 (**not x18**), x29, x30, sp, pc **and
+  d8–d15** — 22 slots. Anchors: `runtime/asm_arm64.s`, `runtime/stubs_arm64.go`.
+- **Signal context → accessor functions, not `REG_*` indices.** `segv.rs:27` indexes
+  `(*ctx).uc_mcontext.gregs[REG_RIP]`; on Darwin `uc_mcontext` is a **pointer**, so that form
+  cannot survive. New `src/runtime/sigctx/` with `pc/set_pc/sp/set_sp/fp/set_fp` (+ arm64 `lr`)
+  returning by value. Bonus: the FP-chain walk ports **unchanged in structure** — Apple's ABI
+  mandates a frame pointer and the arm64 frame record is `[x29]`/`[x29+8]`, identical in shape to
+  the x86 `[rbp]`/`[rbp+8]` chain. Consolidate the three duplicated walkers (`segv.rs:289-324`,
+  `runtime/mod.rs:296-308`, `sched/m.rs:341-364`) into one while there.
+- **The proc-macro trap, solved properly.** A proc macro runs on the *host*, so `cfg!()` inside
+  `goish-macros` reads the wrong values. Rather than emitting `#[cfg]`-gated alternatives, strip
+  arch knowledge from the macro **entirely**: `goish-macros/src/lib.rs:48-58` emits
+  `::goish::__goish_entry!();` and the per-target bodies live in normal `src/` files behind a
+  `macro_rules!`. cfg is then evaluated by rustc at target-compile time (the only correct time),
+  `goish-macros` never needs a target dimension, and the arch code sits where the lint and anchor
+  tooling can see it.
+- **`GOOS`/`GOARCH`** (`runtime/mod.rs:54-59`) become cfg-derived; anchor to
+  `internal/goos/goos.go` / `internal/goarch/goarch.go`. Fix the two examples that assert
+  `"amd64"` (`runtime_goos_goarch_smoke.rs`, `runtime_stubs_smoke.rs`) to derive from `cfg!`.
+- **Fix two latent bugs that are wrong on Linux today**: `src/net/dnsclient.rs:60` hardcodes raw
+  syscall `228` instead of the existing `SYS_CLOCK_GETTIME`; `src/internal/syscall/unix/mod.rs:5`
+  declares `mod sysnum_linux_amd64;` with no cfg gate.
+
+**Done when:** `make e2e` and `make lint` on x86_64-linux are byte-identical to before.
+
+### The 595 examples — an allowlist, not source edits
+
+Counted 2026-08-21: **595** `examples/*.rs` (596 including one in a subdirectory) and **418**
+`[[example]]` blocks in `Cargo.toml`, none of which uses `required-features` today. Cargo has **no cfg-conditional `required-features`**, so a feature table cannot be driven by
+target tuple; that road is closed. Editing 418 `[[example]]` blocks is churn with no payoff.
+
+Instead: `scripts/darwin_examples.txt`, a newline-delimited allowlist, with `make build-darwin`
+expanding it into explicit `--example` flags. `--examples` is never used on Darwin. The
+allowlist starts at one line (`hello`) and grows monotonically — **it is the per-milestone
+acceptance artifact and the CI job definition**, a ratchet in the same spirit as
+`lint_baseline.json`. `examples/sigaltstack_offline_proof.rs` (x86 inline asm) simply never
+enters the list until it has an arm64 counterpart.
+
+---
+
+## Milestone 1 — boot + hello world
+
+**Target: `examples/hello.rs`.** 14 lines, allocation-free, calls `syscall::Write(STDOUT, …)`.
+Its own header reads *"Milestone 1 smoke test … proves syscall + _start + rt0 + macro all work
+end-to-end"* — it was goish's original milestone 1 on Linux and it is the right one here.
+No threads, no scheduler, no netpoller, no signals.
+
+**`.cargo/config.toml`** gains exactly one flag:
+```toml
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "force-frame-pointers=yes"]
+```
+Every bare-metal flag is dropped: `-nostartfiles` (no crt0 exists), `-nodefaultlibs` (we *want*
+libSystem), `-static` (impossible), `--no-dynamic-linker` (ld64 rejects it),
+`relocation-model=static` (PIE is mandatory). The existing `[build] target` pin stays — it exists
+so those flags don't leak into `goish-macros`, and since the host tuple *is*
+`aarch64-apple-darwin`, this block does leak; `force-frame-pointers` is harmless to a proc macro
+and Apple's ABI mandates the frame pointer anyway. Darwin builds pass `--target` explicitly.
+
+**Steps, in dependency order:**
+
+1. `.cargo/config.toml` block — until `cargo build --target aarch64-apple-darwin` reaches a
+   *compile* error rather than a config error.
+2. `src/sys/` facade + `sys_linux_amd64.rs` (verbatim move). **Linux e2e must be identical.**
+3. `src/sys/sys_darwin_arm64.rs`: `write`, `read`, `exit`, `mmap`, `munmap`, `mprotect`,
+   `__error`, the three return adapters, `PHYS_PAGE_SIZE = 16384`.
+4. The `src/syscall/` split — **standalone commit**, see the ratchet protocol below.
+5. `syscall_darwin.rs` + `zerrors`/`ztypes`: just `Write`/`Read`/`Exit`/`Mmap`/`Munmap`/
+   `Mprotect` and the errno table; everything else `unimplemented!()`.
+6. `goish-macros/src/lib.rs:48-58` → `::goish::__goish_entry!();`. **This is the riskiest "no-op"
+   in M1** — it touches every example on Linux. Its own commit, full `make e2e-full`.
+7. `src/lib.rs` + `runtime/entry_linux_amd64.rs` (the moved `global_asm!`) + `entry_darwin.rs`
+   (`#[no_mangle] extern "C" fn main(argc, argv, envp, apple) -> i32`).
+8. `src/lib.rs:359-377` — `#[cfg(target_os = "macos")]` no-op `__run_pkg_inits`.
+9. `rt_section.rs` + the 8 `link_section` files — cfg the section name; `is_in_runtime()` →
+   `false` on Darwin.
+10. `runtime/mod.rs:615` — `__goish_rt0` grows an `envp` parameter and its body splits into
+    stages. The Darwin arm runs **only**: `args::__set` → `flags::init_from_envp` → dlmalloc heap
+    bootstrap → `__goish_main()` → `sys::exit(0)`. Skipped: `setup_main_tls`, `rand::init`
+    (rdtsc), `mheap_init`, `mcentral_init`, `register_m_storage`, `setup_main_g0`,
+    `bootstrap_ps`, `bootstrap_workers`, `start_sysmon`, the SIGPIPE `RtSigaction`,
+    `preempt::install`, `symbolize::init`.
+11. `runtime/flags.rs:29` — split `init_from_argv` into `init_from_argv` + `init_from_envp(envp)`.
+    **envp arrives as `main`'s 3rd argument on Darwin**; the `envp = argv + argc + 1` ELF-stack
+    walk is invalid there. Linux keeps computing it and calls the same `init_from_envp`.
+12. `runtime/heap.rs` — the pre-mheap dlmalloc `#[global_allocator]` path sources pages from
+    `sys::mmap` and honours `PHYS_PAGE_SIZE`.
+13. `runtime/mod.rs:899` `#[panic_handler]` — Darwin arm skips the TLS-dependent `panic_recover`
+    check; write via `sys::write(2, …)` and `sys::exit(2)`.
+14. `scripts/darwin_examples.txt` (one line: `hello`) + `make build-darwin`.
+
+**Done when all four hold:** `hello` prints `Hello, World!` and exits 0; `file` reports Mach-O
+arm64, `otool -L` shows `libSystem.B.dylib`, `otool -l` shows a valid `LC_MAIN` entryoff;
+`codesign -v` passes (ld64's ad-hoc signature — never add a `strip`/`objcopy` step, it would
+invalidate it and the binary would not execute at all); and `make e2e` on x86_64-linux is
+unchanged with zero new lint findings.
+
+Watch: `main` must not be `-> !` (dyld expects a normal `main`) — call `sys::exit(0)` explicitly
+rather than falling off the end. And Mach-O symbols carry a leading underscore
+(`___goish_rt0`), while `.type`/`.size`/ELF `.section` directives hard-error and `int3` becomes
+`brk #0` — prefer `sym` operands over literal symbol names to avoid the whole class.
+
+---
+
+## Milestone ladder
+
+Each milestone ends with its examples added to the allowlist, green on Darwin, and **Linux e2e
+unchanged**.
+
+| M | Goal | Main risk | Go anchors |
+|---|---|---|---|
+| **2 — Memory & 16 KiB pages** | mheap + mcentral online; full `alloc` works | The kernel/allocator page ordering **inverts**: Linux has kernel 4 KiB < Go page 8 KiB, Darwin has kernel 16 KiB > Go page 8 KiB, so one Go page is *half* a kernel page and `madvise`/`mprotect` cannot act on it. Introduce a `PHYS_PAGE_SIZE` distinct from `PAGE_SHIFT=13` (keep the latter — Go uses 8 KiB everywhere) and scavenge only in multiples of it, collapsing the three hardcoded `4096` copies (`sched/stack.rs:144`, `segv.rs:31`, `grow.rs:344`). `MADV_DONTNEED` at `stack.rs:386` — the mechanism the million-goroutine demo rests on — neither releases nor zeroes on Darwin. `MAP_NORESERVE` doesn't exist. Second-order: a 64 KiB goroutine stack now loses 16 KiB (25%) to its guard page. **`mheap/consts.rs` needs no change** — `heapAddrBits` is 48 and `arenaBaseOffset` is 0 on arm64. | `runtime/malloc.go`, `runtime/mem_darwin.go` |
+| **3 — Time, entropy, CPU count** | `time.Now`, `nanotime`, PRNG seed, `num_cpus` | `rdtsc` (`runtime/rand.rs:31-44`) → `mrs cntvct_el0` or `mach_absolute_time`; `Getrandom` → `arc4random_buf`; `SchedGetaffinity` → `sysctlbyname("hw.logicalcpu")` | `runtime/sys_darwin.go`, `runtime/os_darwin.go` (`getncpu`, `readRandom`) |
+| **4 — Threads + TLS** | N worker Ms; `current_m()` works | `acquirem`/`releasem` (`sched/m.rs:285-322`) are deliberately `lock add`/`lock xadd` on `fs:[…]` so the RMW cannot land on the wrong M after a SIGURG-induced migration; TSD cannot reproduce that single-instruction property and the invariant needs re-establishing. Ship `pthread_getspecific` first; the 3-instruction `MRS TPIDRRO_EL0` fast path is a separate, deferrable step whose entry condition is *read `tls_arm64.s` first*. **Store each M's `pthread_t` in `MStorage`** — M6 and M8 both need it. `setup_main_g0` gets *simpler*: `pthread_get_stackaddr_np` replaces the `/proc/self/maps` parse. | `runtime/os_darwin.go:233-258`, `runtime/tls_arm64.s:21-26` |
+| **5 — Context switch (AAPCS64)** | goroutines run; `go!` works | Return address is in **x30, not on the stack**, so `swap_context`'s "`ret` pops PC off the target stack" design and `gogo`'s red-zone-avoiding `jmp` both need restructuring, not transliterating. **`d8`–`d15` are callee-saved** — SysV has no equivalent, so this is strictly more work than the amd64 version, and omitting them corrupts float state silently. **Never touch x18.** No red zone. | `runtime/asm_arm64.s` (`gogo`, `mcall`, `systemstack`), `runtime/stubs_arm64.go` |
+| **6 — Signals: SIGSEGV + backtrace** | crash → backtrace, guard-page detection | `uc_mcontext` is a pointer; BSD `sigaction` has **no `sa_restorer`**, so `SigreturnTrampoline` (which hardcodes `rt_sigreturn=15`) is Linux-only. **DWARF is not in the linked Mach-O image** — it lives in `.o` files and `.dSYM` bundles, so `runtime/symbolize/` (which mmaps `/proc/self/exe` and parses ELF) degrades to `dladdr()`: symbol name, no `file:line`. A permanent fidelity regression on Darwin; document rather than build a dSYM parser. | `runtime/signal_arm64.go`, `runtime/defs_darwin_arm64.go` |
+| **7 — Futex → pthread cond** | M parking/waking; `note.rs`; `sync` | Must land with or after M4 — it adds `pthread_mutex_t`/`pthread_cond_t` to `MStorage`, whose offset-0 `tls_self` invariant is load-bearing for asm. All 10 futex consumers. | `runtime/os_darwin.go:31-92` |
+| **8 — Async preemption** | SIGURG preemption; sysmon retakes | Rewrite `preempt.rs:349-521`: `stp`/`ldp` instead of `fxsave64`, NZCV/FPSR via `mrs`/`msr` instead of `pushfq`/`popfq`, no 128-byte red-zone skip, **x18 excluded**. `pthread_kill` replaces `Tgkill` (`sysmon.rs:408`). The `goish_rt_text` PC-range filter needs the Mach-O `getsectiondata` walk. Re-derive `ASYNC_PREEMPT_STACK`. | `runtime/preempt_arm64.s`, `runtime/os_darwin.go:489` |
+| **9 — kqueue netpoller** | `net`, TCP, HTTP examples | Wake is `EVFILT_USER` + `NOTE_TRIGGER`, **not** a self-pipe (Go uses the pipe variant only on other BSDs). No `accept4` → `accept` + `fcntl`. `EV_CLEAR` ≈ `EPOLLET` but `kevent` batches changes and events in one call. | `runtime/netpoll_kqueue.go`, `netpoll_kqueue_event.go` |
+| **10 — Package init** | `goish::import!` on Darwin | `getsectiondata` bounds; **not** `__mod_init_func` (dyld runs it pre-allocator) | `runtime/proc.go` (`doInit`) |
+| **11 — CPU features** | AES/PMULL/SHA/DIT detection | Perf-only — all crypto is scalar today, so nothing regresses. **Exception:** `crypto/subtle/dit.rs` is a hardcoded no-op standing in for Go's `DITSupported`, which is *true on arm64 with FEAT_DIT* — on this target that silently drops a timing guarantee Go provides. Also fix `xor_generic.rs:33 supportsUnaligned` and `tls/cipher_suites.rs:1164 hasAESGCMHardwareSupport`. | `internal/cpu/cpu_arm64_darwin.go` |
+| **12 — Weak-memory audit** | scheduler/chan/allocator correct under non-TSO | x86 TSO has been hiding every sloppy `Ordering`, and **x86 CI gives literally zero signal** — this is not a milestone without the arm64 CI job. Priority: `runtime/lockfree_ring.rs`, sudog publication in `gochan.rs`, `runqput`/`runqget`/`runqsteal` in `sched/scheduler.rs`, `note.rs`. Grepping `Ordering::Relaxed` is a fine *method* but an unusable *gate*. | `runtime/proc.go` runq comments (they call out acquire/release specifically for arm64), `internal/runtime/atomic/atomic_arm64.go` |
+
+---
+
+## Build, CI and provenance tooling
+
+- **`Makefile:59`** — add `--target $(TARGET)` to `build`; on Linux this is a no-op since the
+  `[build]` pin already puts artifacts there, so it cannot regress. Add `build-darwin`/
+  `e2e-darwin` reading the allowlist.
+- **`scripts/e2e_runner.sh:30,80`** — take the allowlist as an input filter rather than globbing
+  the examples directory.
+- **`scripts/port_coverage.py:38-42`** — `SKIP_FILE` excludes `_arm64.go` **and** `_darwin.go`.
+  Do **not** just edit the regex: that makes the denominator jump and the headline coverage
+  number drop overnight, becoming uninterpretable exactly when it is most needed. Make it a
+  function of a `--goos`/`--goarch` pair defaulting to `linux/amd64` (preserving today's numbers)
+  and report the two targets separately.
+- **CI** — `e2e.yml:32` and `e2e-race.yml:45` stay on `ubuntu-latest` + x86_64; that is the green
+  baseline and is non-negotiable. Add `e2e-darwin.yml` on `macos-latest` (Apple Silicon) running
+  only the allowlist. M12's definition of done is `make e2e-full` (50 loops) green there.
+- **Anchors** — write them with file path and symbol, then let `anchor_check.py --fix` /
+  `anchor_port.py` populate the line ranges. **Never hand-guess a range**: the checker resolves by
+  symbol name and ignores the range, so a wrong range passes tier-2 silently (229 of 1802 were
+  wrong when first measured — hence the `anchors` make target).
+- **`lint_baseline.json` needs no per-target dimension**, because it is keyed by `(file, rule)`
+  and cfg'd-out files still exist on disk. **Verify this before relying on it**: add a
+  `#[cfg(target_os = "macos")]` file with a deliberate violation and check `port_lint.py --new`
+  fires on Linux. If `goishlint` type-checks rather than parses, cfg'd-out files vanish from the
+  scan and the ratchet silently becomes host-dependent.
+- **README** — the scope statement, the static-linking claim, and every build/run command example
+  (lines ~92, 108, 282, 328-331, 338, 354, 358, 427-428).
+
+### The file-move hazard — the highest-risk process step
+
+Splitting `syscall/mod.rs` creates new file paths. The old file carries thousands of
+grandfathered findings; the new paths have **no baseline entry**, and `port_lint.py`'s core
+invariant is that a file absent from the baseline must be clean. The split hard-fails the
+ratchet. Same for `gobuf.rs` → `gobuf_amd64.rs`, `preempt.rs`'s mcontext block → `sigctx/`, and
+the entry stub → `entry_linux_amd64.rs`.
+
+**Mandatory protocol:** each move is a standalone commit changing only file paths — no logic
+edits, not one. The gate an implementer can actually check is `git diff -M --stat` reporting the
+commit as **pure renames with zero content lines changed**; anything else is a logic edit smuggled
+inside a rename. `port_lint.py --update` and the conserved-per-rule-count review then follow as a
+separate maintainer step (see the goishlint note in M0 — the binary is closed source and is in
+neither an agent's environment nor CI). Do not let `--update` *be* the check: it always "works",
+which is exactly why this is the step most likely to be defeated by a rushed implementer.
+
+---
+
+## Explicitly out of scope
+
+- **Preserving the libc-free / static-binary property on Darwin.** Impossible.
+- **In-process DWARF backtraces.** `dladdr()` symbol names only; no `file:line`. Permanent.
+- **arm64 crypto assembly.** M11 delivers *detection*; the AES/SHA/PMULL/NEON kernels are a
+  separate multi-quarter effort orthogonal to "does goish run". Portable Rust paths stay in use.
+- **`os/exec` subprocesses.** Go *does* use `libc_fork` + exec on Darwin
+  (`syscall/exec_libc2.go:55,85`), so this is translatable rather than a rewrite — but `pipe2`
+  doesn't exist (`pipe` + `fcntl`) and fork-in-a-multithreaded-process rules are stricter.
+  `examples/cmd_stdin_test.rs` and `cmd_stdout_pipe_test.rs` are **knowingly excluded** from the
+  Darwin allowlist until this is taken on.
+- **`goish::import!` on Darwin before M10.** Every example using it must stay off the allowlist —
+  easy to miss, and it produces silently-missing initialization rather than a link error.
+- **`x86_64-apple-darwin`** (Rosetta / Intel Macs) and any iOS target.
+- ~~**`aarch64-unknown-linux-gnu`.** Not the chosen target~~ — **in scope as of 2026-08-21**, and
+  M1 has landed on it. See "The linux/aarch64 question" above.
+
+---
+
+## Verification
+
+- **Every milestone, on x86_64-linux (regression gate):** `make e2e` + `make lint`. After
+  anything touching M5, M8 or M12, `make e2e-full`. This can run locally (see Context) via the
+  `rust-lld` shim + `docker run --platform linux/amd64` — but only as compile-and-smoke, and only
+  over the allowlist, never `--examples` (~50 GiB). Run `e2e_runner.sh` itself *inside* the amd64
+  container with the repo bind-mounted — verified to need no source change, given `ARTIFACTS`
+  outside the mount and a `FILTER` matching what was built. (The alternative, wrapping each binary,
+  would need a `RUNNER` hook at its three `"$bin"` execs, lines 158/162/164.)
+- **M1:** the four criteria above (`hello` output, `file`/`otool`, `codesign -v`, Linux
+  unchanged).
+- **M2–M5:** `alloc_smoke`, `alloc_mheap`, `chan_unbuffered`, `chan_buffered`, `sched_swap`
+  natively, added to the allowlist as they go green.
+- **M8:** an arm64 counterpart to `sigaltstack_offline_proof`, `preempt_sysmon`, and a deliberate
+  null-deref confirming the x29-chain backtrace.
+- **M9:** `http_hello`, `conn_deadline_smoke`, `conn_drop_no_leak`.
+- **M12:** `make e2e-full` (50 loops) across the full allowlist on the `macos-latest` runner.
+  This is the only thing that will surface a weak-ordering bug.
+- **Provenance, continuously:** `make lint` and `make anchors` with `GOROOT` on the Go 1.25.5 SDK.
+- **`spawn_million`, once M2–M5 land:** the README's "~2 GiB virtual / ~2.4 GiB peak RSS" is
+  4 KiB-page arithmetic and the sub-page 2 KiB stackpool is built on it. Re-measure at 16 KiB
+  rather than re-quoting.
