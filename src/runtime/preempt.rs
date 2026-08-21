@@ -190,7 +190,7 @@ pub fn async_preempt_stack() -> usize {
 // (functions sharing the same `.text` section).
 // The trampoline body lives one file per target — see
 // `runtime/preempt_asm_amd64.rs` / `runtime/preempt_asm_arm64.rs`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use super::preempt_asm_amd64::goish_async_preempt;
 #[cfg(target_arch = "aarch64")]
 pub use super::preempt_asm_arm64::goish_async_preempt;

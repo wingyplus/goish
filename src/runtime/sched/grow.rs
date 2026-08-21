@@ -25,7 +25,7 @@ use crate::syscall;
 
 // The assembly bodies live one file per target — see
 // `sched/grow_asm_amd64.rs` / `sched/grow_asm_arm64.rs`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) use super::grow_asm_amd64::{current_sp, goish_on_stack};
 #[cfg(target_arch = "aarch64")]
 pub(crate) use super::grow_asm_arm64::{current_sp, goish_on_stack};

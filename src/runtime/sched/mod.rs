@@ -56,11 +56,11 @@ mod stack;
 pub mod stackpool;
 pub(crate) mod tls;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod gobuf_asm_amd64;
 #[cfg(target_arch = "aarch64")]
 mod gobuf_asm_arm64;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod grow_asm_amd64;
 #[cfg(target_arch = "aarch64")]
 mod grow_asm_arm64;

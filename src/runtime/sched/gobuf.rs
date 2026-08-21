@@ -30,7 +30,7 @@
 
 // The assembly bodies live one file per target — see
 // `sched/gobuf_asm_amd64.rs` / `sched/gobuf_asm_arm64.rs`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use super::gobuf_asm_amd64::{swap_context, gogo, mcall_asm};
 #[cfg(target_arch = "aarch64")]
 pub use super::gobuf_asm_arm64::{swap_context, gogo, mcall_asm};

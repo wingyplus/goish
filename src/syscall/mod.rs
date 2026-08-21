@@ -1673,7 +1673,7 @@ pub fn SchedGetaffinity(pid: i32, cpusetsize: usize, mask: *mut u8) -> isize {
 /// operation is one `msr` and no kernel entry. Callers go through
 /// `runtime::sched::tls::{base, set_base}` rather than calling this
 /// directly, which is what keeps the difference from leaking.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[allow(non_snake_case)]
 pub fn ArchPrctl(code: i32, addr: usize) -> isize {
     unsafe { syscall2(SYS_ARCH_PRCTL, code as usize, addr) }

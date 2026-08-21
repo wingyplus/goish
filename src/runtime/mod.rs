@@ -31,7 +31,7 @@ pub mod note;
 pub mod pkginit;
 pub mod pprof;
 pub mod preempt;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod preempt_asm_amd64;
 #[cfg(target_arch = "aarch64")]
 mod preempt_asm_arm64;
@@ -726,14 +726,14 @@ pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     // Worker Ms park in the scheduler, which needs a context switch to
     // dispatch anything — M5 on arm64. Spawning them before that exists
     // would put threads into `m_schedule_loop` with no way out.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     sched::bootstrap_workers(nprocs);
 
     // Spawn the sysmon thread (M18a). Owns the global timer heap;
     // wakes timer-parked goroutines via `time::Sleep`. Must come
     // after bootstrap_workers so register_m_storage's allocator is
     // up.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     sysmon::start_sysmon();
 
     // Ignore SIGPIPE.
@@ -819,7 +819,7 @@ pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     // The SIGURG handler injects a call to the asyncPreempt trampoline,
     // which is M8 on arm64. Arming it before that exists would turn every
     // preemption into the trampoline's own abort.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     preempt::install();
 
     // Initialise the in-process DWARF symboliser. Mmaps
@@ -894,14 +894,14 @@ pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     // at `hello` rather than at the channel examples.
     //
     // M5 deletes this branch.
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
         unsafe { __goish_main() };
         // Go: `exit(0)` at the foot of runtime.main.
         crate::syscall::Exit(0);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     sched::newproc_with_stack_at(
         8 * 1024 * 1024,
         file!(),
@@ -921,7 +921,7 @@ pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     // exit_group(2). (`m_schedule_loop`, not the public `schedule()`:
     // the public entry is `-> ()` because from inside a goroutine it
     // acts as a returning drain barrier.)
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     sched::m_schedule_loop();
 
     // Unreachable on amd64 (`m_schedule_loop` is `-> !`); on arm64 the

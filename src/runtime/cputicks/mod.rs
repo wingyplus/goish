@@ -18,9 +18,9 @@
 // than enough here. Following Go rather than reaching for `MRS
 // CNTVCT_EL0` also keeps every line citable, which is the whole point.
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod cputicks_amd64;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use cputicks_amd64::cputicks;
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
