@@ -249,6 +249,116 @@ Files added, all following the `_GOOS_GOARCH` convention:
 
 ---
 
+### M1 on darwin/arm64 — landed 2026-08-21
+
+`make run-darwin` builds and runs **17 examples natively on macOS**, 17 pass, 0 fail. All four
+acceptance criteria hold: `hello` prints `Hello, World!` and exits 0; `file` reports *Mach-O
+64-bit executable arm64*; `otool -L` shows `/usr/lib/libSystem.B.dylib` and `otool -l` a valid
+`LC_MAIN entryoff 2112`; `codesign -v` is silent. The x86_64-linux regression gate was re-run
+after every commit that touched shared code — 12 examples cross-linked and run under `docker
+--platform linux/amd64`, 12 pass, 0 fail — and the binary is still `ET_EXEC` with no `PT_INTERP`
+and a 92144-byte `goish_rt_text` section, so the static libc-free property is intact.
+
+On this target it is native execution, not emulation. It is the only gate in the tree that needs
+neither docker nor qemu.
+
+**Seven findings that change the rest of the plan.**
+
+1. **The wall is M4, not M2 — reorder the ladder.** The plan's ladder implies memory then time
+   then threads. Measured against 18 probed examples, the thing that actually gates them is
+   `current_m()`: `defer_smoke`, `aes_smoke`, `asn1_smoke` and `atomic_value_smoke` all stop at
+   the thread pointer, and nothing stopped at the allocator. M4 unblocks strictly more than M2
+   or M3 do, and it is also M6's and M8's prerequisite (both need each M's `pthread_t` in
+   `MStorage`). **Take M4 next.**
+
+2. **dlmalloc is gone, so M1 got the allocator for free and M2 is smaller than written.** Plan
+   step 12 and part of M2's risk paragraph describe a "pre-mheap dlmalloc `#[global_allocator]`
+   path" that no longer exists — `PageAlloc`'s metadata moved to raw `mmap`, so mheap and
+   mcentral need nothing but `Mmap` and both come online in M1 here. The 320 GiB `MAP_NORESERVE`
+   arena reservation was the plausible failure (16 KiB pages, no overcommit accounting to opt out
+   of); measured first, macOS returns a mapping at `0x70_0000_0000`. What remains of M2 is the
+   real content: the page-size inversion, `MADV_FREE_REUSABLE`, and the guard-page arithmetic.
+
+3. **Abort stubs that name their milestone are worth the few bytes.** Every unimplemented Darwin
+   wrapper prints `goish: syscall::Socket is not implemented on darwin/arm64 yet (M9)` and exits
+   2, rather than `unimplemented!()`. Finding 1 above is a *direct read-off* of those messages —
+   `unimplemented!()` would have given a panic location and no ordering signal at all. Keep the
+   pattern for every future target.
+
+4. **`svc #0x80` works on macOS/arm64 and is still the wrong answer.** Measured before deciding:
+   a bare `svc` with `0x2000004` in x16 wrote to fd 1 and returned 14. Rejected because it buys
+   exactly one milestone — from M3 on, every primitive the port needs (`pthread_create`,
+   `pthread_cond_timedwait_relative_np`, `sysctlbyname`, `arc4random_buf`, `dladdr`,
+   `getsectiondata`) is a libSystem function with no syscall behind it. Record the measurement so
+   it is not re-litigated.
+
+5. **The constant tables must be generated, not written.** `zerrors_darwin_arm64.rs` and
+   `ztypes_darwin_arm64.rs` came from compiling a C program against `$(xcrun --show-sdk-path)`
+   and printing the values and `offsetof`/`sizeof`. This is the half of the port rustc cannot
+   check, and the divergences are not marginal: SIGURG 23→16 (**goish's own preemption signal**),
+   SIGUSR1 10→30, EAGAIN 11→35, ENOSYS 38→78, SOL_SOCKET 1→0xffff, AT_FDCWD -100→-2,
+   SA_ONSTACK 0x08000000→1. Linux-only constants are `POISON` (`grep POISON` is the inventory)
+   rather than a plausible number.
+
+6. **Two constants had to change *type*, and both were resolvable without touching callers.**
+   `S_IF*` are `u16` here because Darwin's `mode_t` is 16-bit and `st_mode` sits at offset 4 with
+   `st_nlink` at 6 — there is no room to widen it (Go makes the same split). The termios flag
+   words are `u64` because `tcflag_t` is `unsigned long`. Typing the constants to match keeps
+   `st.st_mode & S_IFMT` and `termios.Iflag &= !IGNBRK` compiling unchanged on every target.
+   `net/parse.rs`'s two `SockaddrIn { .. }` literals became `SockaddrIn::ipv4_host(addr, port)`:
+   a BSD sockaddr literal **cannot** be written portably, since `sin_family` is a `u8` at offset 1
+   behind a `sin_len` byte. Constructors are the portable surface for any `#[repr(C)]` type whose
+   layout is per-OS.
+
+7. **`#[link_section]` on Mach-O needs the attributes, not just the segment pair.**
+   `"__TEXT,__goish_rt_text"` links but makes ld64 treat it as data, warning that its symbols
+   carry unwind information outside a code section. The correct spelling is
+   `"__TEXT,__goish_rt_text,regular,pure_instructions"`. A runtime-code section the linker does
+   not believe is code is the wrong footing for the M8 PC-range check that will read it.
+
+**Files added.** Following `_GOOS_GOARCH` throughout:
+
+| Area | linux/amd64 | linux/arm64 | darwin/arm64 |
+|---|---|---|---|
+| raw system interface | `sys/sys_linux_amd64.rs` | `sys/sys_linux_arm64.rs` | `sys/sys_darwin_arm64.rs` (libSystem + 3 return adapters) |
+| Go-shaped wrappers | `syscall/syscall_linux.rs` | ← same | `syscall/syscall_darwin.rs` |
+| constants | `syscall/zsysnum_linux_amd64.rs` | `zsysnum_linux_arm64.rs` | `syscall/zerrors_darwin_arm64.rs` (no `zsysnum` — libSystem has no numbers) |
+| struct layouts | in `syscall_linux.rs` | ← same | `syscall/ztypes_darwin_arm64.rs` |
+| thread pointer | `sched/tls/tls_linux_amd64.rs` | `tls_linux_arm64.rs` | `tls_darwin_arm64.rs` (2 real, 5 M4 aborts) |
+| cycle counter | `cputicks/cputicks_amd64.rs` | `cputicks_linux_arm64.rs` | `cputicks_darwin_arm64.rs` (`mach_absolute_time`) |
+| boot | `runtime/mod.rs` `__goish_rt0` | ← same | `runtime/rt0_darwin.rs` (4 steps, not 15) |
+| entry | `runtime/entry.rs` `_start` | ← same | `runtime/entry.rs` — a C `main`, not a stub |
+
+**The file-move hazard, resolved and needing maintainer confirmation.** Splitting
+`syscall/mod.rs` into a dispatcher plus `syscall_linux.rs` moved 2033 grandfathered lines to a
+path with no baseline entry, which hard-fails `port_lint.py`'s "a file absent from the baseline
+must be clean" invariant. `lint_baseline.json`'s single key was renamed in place — a one-line
+diff, counts conserved exactly (`GOISH005: 70, GOISH014: 115, GOISH015: 1, GOISH016: 1,
+GOISH023: 112`, total 12674 unchanged). **This is unverified**: `goishlint` is closed source and
+in neither an agent's environment nor CI, so the maintainer should re-run `port_lint.py --update`
+and confirm the per-rule counts did not move. The four `#[path]` attribute lines added to
+`syscall_linux.rs` are the only content change and are the only plausible source of drift.
+
+**Tooling, checked rather than assumed.** `port_coverage.py` globs directories rather than
+walking the module tree, so the files reachable only through `#[path]` stay visible: the
+`syscall` scope reports 86/634 = 13.6% and 9 `.rs` files both before and after, byte-identical.
+`anchor_check.py src` reports exactly the same census before and after (3384 anchors, 2259 ok,
+803 RANGE_WRONG, 64 RANGE_FAT, 207 END_SHORT, 31 NOT_FOUND, 20 MISSING_FILE, 1806 BARE) — the
+new files introduce zero findings, and the 803 wrong ranges are pre-existing drift from running
+against the local Go 1.26.4 rather than the pinned 1.25.5 SDK. Note the trap the script's own
+header warns about: with `GOROOT` unset every anchor reports `MISSING_FILE`, which reads as a
+catastrophe and is a missing environment variable.
+
+**What M1 does not do here.** The full skip list is in `runtime/rt0_darwin.rs`. The two that
+produce no error at all, and so are the easiest to trip over:
+
+- **`__run_pkg_inits` is a no-op** — every `goish::import!` port `init()` silently does not run
+  (M10). Missing initialisation, not a link failure.
+- **`current_g()` is `None` throughout**, so any blocking primitive fatals rather than parking
+  (M5).
+
+---
+
 ## Verified facts that shape the plan
 
 | Claim | Verdict | Source |
@@ -418,8 +528,9 @@ and Apple's ABI mandates the frame pointer anyway. Darwin builds pass `--target`
 11. `runtime/flags.rs:29` — split `init_from_argv` into `init_from_argv` + `init_from_envp(envp)`.
     **envp arrives as `main`'s 3rd argument on Darwin**; the `envp = argv + argc + 1` ELF-stack
     walk is invalid there. Linux keeps computing it and calls the same `init_from_envp`.
-12. `runtime/heap.rs` — the pre-mheap dlmalloc `#[global_allocator]` path sources pages from
-    `sys::mmap` and honours `PHYS_PAGE_SIZE`.
+12. ~~`runtime/heap.rs` — the pre-mheap dlmalloc `#[global_allocator]` path~~ — **void**.
+    Written when `heap.rs` still had a dlmalloc tier; it does not, and `mheap_init` +
+    `mcentral_init` need nothing but `Mmap`. Both run in M1. See finding 2 above.
 13. `runtime/mod.rs:899` `#[panic_handler]` — Darwin arm skips the TLS-dependent `panic_recover`
     check; write via `sys::write(2, …)` and `sys::exit(2)`.
 14. `scripts/darwin_examples.txt` (one line: `hello`) + `make build-darwin`.
@@ -444,7 +555,7 @@ unchanged**.
 
 | M | Goal | Main risk | Go anchors |
 |---|---|---|---|
-| **2 — Memory & 16 KiB pages** | mheap + mcentral online; full `alloc` works | The kernel/allocator page ordering **inverts**: Linux has kernel 4 KiB < Go page 8 KiB, Darwin has kernel 16 KiB > Go page 8 KiB, so one Go page is *half* a kernel page and `madvise`/`mprotect` cannot act on it. Introduce a `PHYS_PAGE_SIZE` distinct from `PAGE_SHIFT=13` (keep the latter — Go uses 8 KiB everywhere) and scavenge only in multiples of it, collapsing the three hardcoded `4096` copies (`sched/stack.rs:144`, `segv.rs:31`, `grow.rs:344`). `MADV_DONTNEED` at `stack.rs:386` — the mechanism the million-goroutine demo rests on — neither releases nor zeroes on Darwin. `MAP_NORESERVE` doesn't exist. Second-order: a 64 KiB goroutine stack now loses 16 KiB (25%) to its guard page. **`mheap/consts.rs` needs no change** — `heapAddrBits` is 48 and `arenaBaseOffset` is 0 on arm64. | `runtime/malloc.go`, `runtime/mem_darwin.go` |
+| **2 — Memory & 16 KiB pages** | ~~mheap + mcentral online~~ (**done in M1** — see finding 2 above; dlmalloc is gone, so both need only `Mmap`). What is left: `madvise` semantics, the page-size inversion, guard-page arithmetic | The kernel/allocator page ordering **inverts**: Linux has kernel 4 KiB < Go page 8 KiB, Darwin has kernel 16 KiB > Go page 8 KiB, so one Go page is *half* a kernel page and `madvise`/`mprotect` cannot act on it. Introduce a `PHYS_PAGE_SIZE` distinct from `PAGE_SHIFT=13` (keep the latter — Go uses 8 KiB everywhere) and scavenge only in multiples of it, collapsing the three hardcoded `4096` copies (`sched/stack.rs:144`, `segv.rs:31`, `grow.rs:344`). `MADV_DONTNEED` at `stack.rs:386` — the mechanism the million-goroutine demo rests on — neither releases nor zeroes on Darwin. `MAP_NORESERVE` doesn't exist. Second-order: a 64 KiB goroutine stack now loses 16 KiB (25%) to its guard page. **`mheap/consts.rs` needs no change** — `heapAddrBits` is 48 and `arenaBaseOffset` is 0 on arm64. | `runtime/malloc.go`, `runtime/mem_darwin.go` |
 | **3 — Time, entropy, CPU count** | `time.Now`, `nanotime`, PRNG seed, `num_cpus` | `rdtsc` (`runtime/rand.rs:31-44`) → `mrs cntvct_el0` or `mach_absolute_time`; `Getrandom` → `arc4random_buf`; `SchedGetaffinity` → `sysctlbyname("hw.logicalcpu")` | `runtime/sys_darwin.go`, `runtime/os_darwin.go` (`getncpu`, `readRandom`) |
 | **4 — Threads + TLS** | N worker Ms; `current_m()` works | `acquirem`/`releasem` (`sched/m.rs:285-322`) are deliberately `lock add`/`lock xadd` on `fs:[…]` so the RMW cannot land on the wrong M after a SIGURG-induced migration; TSD cannot reproduce that single-instruction property and the invariant needs re-establishing. Ship `pthread_getspecific` first; the 3-instruction `MRS TPIDRRO_EL0` fast path is a separate, deferrable step whose entry condition is *read `tls_arm64.s` first*. **Store each M's `pthread_t` in `MStorage`** — M6 and M8 both need it. `setup_main_g0` gets *simpler*: `pthread_get_stackaddr_np` replaces the `/proc/self/maps` parse. | `runtime/os_darwin.go:233-258`, `runtime/tls_arm64.s:21-26` |
 | **5 — Context switch (AAPCS64)** | goroutines run; `go!` works | Return address is in **x30, not on the stack**, so `swap_context`'s "`ret` pops PC off the target stack" design and `gogo`'s red-zone-avoiding `jmp` both need restructuring, not transliterating. **`d8`–`d15` are callee-saved** — SysV has no equivalent, so this is strictly more work than the amd64 version, and omitting them corrupts float state silently. **Never touch x18.** No red zone. | `runtime/asm_arm64.s` (`gogo`, `mcall`, `systemstack`), `runtime/stubs_arm64.go` |
@@ -516,7 +627,7 @@ which is exactly why this is the step most likely to be defeated by a rushed imp
   Darwin allowlist until this is taken on.
 - **`goish::import!` on Darwin before M10.** Every example using it must stay off the allowlist —
   easy to miss, and it produces silently-missing initialization rather than a link error.
-- **`x86_64-apple-darwin`** (Rosetta / Intel Macs) and any iOS target.
+- **`x86_64-apple-darwin`** (Rosetta / Intel Macs) and any iOS target. Every Darwin `#[cfg]` in the tree is `all(target_os = "macos", target_arch = "aarch64")`, so an Intel build fails to resolve rather than silently taking an arm64 path.
 - ~~**`aarch64-unknown-linux-gnu`.** Not the chosen target~~ — **in scope as of 2026-08-21**, and
   M1 has landed on it. See "The linux/aarch64 question" above.
 

@@ -953,7 +953,7 @@
    "GOISH014": 4,
    "GOISH023": 2
   },
-  "src/syscall/mod.rs": {
+  "src/syscall/syscall_linux.rs": {
    "GOISH005": 70,
    "GOISH014": 116,
    "GOISH015": 1,

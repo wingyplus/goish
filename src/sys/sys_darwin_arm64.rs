@@ -34,10 +34,14 @@
 //     by sign alone, so it is tested for explicitly before the errno read.
 //
 // The errno read has to happen with **no intervening libSystem call**,
-// since any of them may overwrite the slot. Each wrapper below therefore
-// reads it in the same statement sequence as the call it belongs to,
-// and the adapters take the already-captured return value rather than
-// calling anything themselves.
+// since any of them may overwrite the slot — and `__error()` is itself
+// a libSystem call, so "read it always and inspect it later" would put
+// a call between the primitive and its own error code on the *success*
+// path. The adapters therefore take the raw return value and read errno
+// themselves, inside the failure branch only. That makes the rule
+// structural rather than a convention each new wrapper has to remember,
+// and it keeps the success path — which is every `write` goish does —
+// down to one call and one compare.
 
 /// The kernel's page size — the granule `mmap`, `mprotect` and
 /// `madvise` operate on.
@@ -95,14 +99,14 @@ pub unsafe fn errno() -> i32 {
 
 /// Adapt a `-1`-on-failure C return into goish's negative-errno shape.
 ///
-/// `r` must be the value the call returned and `e` the errno captured
-/// straight after it — passing both in rather than reading `errno()`
-/// here is what keeps the "no intervening call" rule checkable at the
-/// call site instead of buried in this function.
+/// **Safety / ordering:** call this on the value the primitive returned
+/// with nothing in between — it reads the thread's `errno`, and only on
+/// the failure branch, which is what keeps `__error()` (a libSystem
+/// call itself) off the success path.
 #[inline]
-pub fn errno_ret(r: isize, e: i32) -> isize {
+pub unsafe fn errno_ret(r: isize) -> isize {
     if r == -1 {
-        -(e as isize)
+        -(errno() as isize)
     } else {
         r
     }
@@ -123,11 +127,12 @@ pub fn direct_ret(r: i32) -> isize {
 ///
 /// `MAP_FAILED` is `(void *) -1`, and a mapping address is otherwise an
 /// unsigned quantity that may legitimately have its top bit set — so
-/// this tests the sentinel rather than the sign.
+/// this tests the sentinel rather than the sign. Same ordering contract
+/// as `errno_ret`.
 #[inline]
-pub fn ptr_ret(p: *mut u8, e: i32) -> isize {
+pub unsafe fn ptr_ret(p: *mut u8) -> isize {
     if p as isize == -1 {
-        -(e as isize)
+        -(errno() as isize)
     } else {
         p as isize
     }
@@ -143,16 +148,14 @@ pub fn ptr_ret(p: *mut u8, e: i32) -> isize {
 #[inline]
 pub unsafe fn sys_write(fd: i32, p: *const u8, n: usize) -> isize {
     let r = write(fd, p, n);
-    let e = errno();
-    errno_ret(r, e)
+    errno_ret(r)
 }
 
 /// `read(2)`. Returns bytes read, or `-errno`.
 #[inline]
 pub unsafe fn sys_read(fd: i32, p: *mut u8, n: usize) -> isize {
     let r = read(fd, p, n);
-    let e = errno();
-    errno_ret(r, e)
+    errno_ret(r)
 }
 
 /// `exit(3)` — whole-process exit.
@@ -178,24 +181,21 @@ pub unsafe fn sys_mmap(
     offset: i64,
 ) -> isize {
     let p = mmap(addr, length, prot, flags, fd, offset);
-    let e = errno();
-    ptr_ret(p, e)
+    ptr_ret(p)
 }
 
 /// `munmap(2)`.
 #[inline]
 pub unsafe fn sys_munmap(addr: *mut u8, length: usize) -> isize {
     let r = munmap(addr, length);
-    let e = errno();
-    errno_ret(r as isize, e)
+    errno_ret(r as isize)
 }
 
 /// `mprotect(2)`.
 #[inline]
 pub unsafe fn sys_mprotect(addr: *mut u8, length: usize, prot: i32) -> isize {
     let r = mprotect(addr, length, prot);
-    let e = errno();
-    errno_ret(r as isize, e)
+    errno_ret(r as isize)
 }
 
 /// `madvise(2)`.
@@ -209,8 +209,7 @@ pub unsafe fn sys_mprotect(addr: *mut u8, length: usize, prot: i32) -> isize {
 #[inline]
 pub unsafe fn sys_madvise(addr: *mut u8, length: usize, advice: i32) -> isize {
     let r = madvise(addr, length, advice);
-    let e = errno();
-    errno_ret(r as isize, e)
+    errno_ret(r as isize)
 }
 
 /// `mach_absolute_time()` — the raw Mach timer, in ticks of an
