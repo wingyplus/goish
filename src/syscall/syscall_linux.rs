@@ -1824,6 +1824,18 @@ impl SockaddrIn {
             | ((octets[1] as u32) << 16)
             | ((octets[2] as u32) << 8)
             | (octets[3] as u32);
+        Self::ipv4_host(addr, port)
+    }
+
+    /// Build from a host-order IPv4 address and a host-order port.
+    ///
+    /// The last constructor added, and the one that let `net/parse.rs`
+    /// stop writing `SockaddrIn { .. }` literals. That matters beyond
+    /// tidiness: BSD sockaddrs carry a leading `sin_len` byte and put
+    /// `sin_family` in a `u8` at offset 1, so a struct literal that
+    /// compiles here cannot compile on Darwin — and one that did would
+    /// be silently malformed. Constructors are the portable surface.
+    pub const fn ipv4_host(addr: u32, port: u16) -> Self {
         SockaddrIn {
             sin_family: AF_INET as u16,
             sin_port: htons(port),

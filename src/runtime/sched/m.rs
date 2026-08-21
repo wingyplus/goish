@@ -323,7 +323,8 @@ pub fn is_tls_ready() -> bool {
 /// address is never held in a register across a preemptible instruction —
 /// the RMW always hits the M we are executing on *at that instant*.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
 pub fn acquirem() {
     if !is_tls_ready() {
         return;
@@ -339,7 +340,8 @@ pub fn acquirem() {
 /// reason as `acquirem` (see there); `xadd` rather than `sub` so
 /// the previous value feeds the underflow tripwire.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text")]
 pub fn releasem() {
     if !is_tls_ready() {
         return;

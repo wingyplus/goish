@@ -27,3 +27,8 @@ pub use cputicks_amd64::cputicks;
 mod cputicks_linux_arm64;
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub use cputicks_linux_arm64::cputicks;
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod cputicks_darwin_arm64;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use cputicks_darwin_arm64::cputicks;

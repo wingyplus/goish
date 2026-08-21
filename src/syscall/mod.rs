@@ -16,3 +16,8 @@
 mod syscall_linux;
 #[cfg(target_os = "linux")]
 pub use syscall_linux::*;
+
+#[cfg(target_os = "macos")]
+mod syscall_darwin;
+#[cfg(target_os = "macos")]
+pub use syscall_darwin::*;

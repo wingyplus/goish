@@ -32,3 +32,14 @@ pub use sys_linux_amd64::*;
 mod sys_linux_arm64;
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub use sys_linux_arm64::*;
+
+// Darwin is the target that does not fit the `syscallN` shape at all —
+// it exports named primitives (`sys_write`, `sys_mmap`, …) plus the
+// three return adapters instead, because libSystem has no "call number
+// N" entry point to hide behind. `crate::syscall` therefore has a
+// per-OS file rather than only a per-arch number table; see
+// `syscall/syscall_darwin.rs`.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod sys_darwin_arm64;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use sys_darwin_arm64::*;
