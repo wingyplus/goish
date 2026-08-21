@@ -339,13 +339,10 @@ fn read_file_bytes(path: &str) -> Option<Vec<u8>> {
     let mut path_bytes: Vec<u8> = path.as_bytes().to_vec();
     path_bytes.push(0);
 
-    let fd = unsafe {
-        crate::syscall::syscall3(crate::syscall::SYS_OPEN, path_bytes.as_ptr() as usize, 0, 0)
-            as i32
-    };
-    if fd < 0 {
-        return None;
-    }
+    // Was a hand-rolled `syscall3(SYS_OPEN, …)`, which both duplicated
+    // the wrapper next door and hard-coded a call arm64 does not have.
+    let fd = crate::syscall::Open(path_bytes.as_ptr(), 0, 0);
+    if fd < 0 { return None; }
 
     let mut buf = vec![0u8; 8192];
     let n = unsafe {

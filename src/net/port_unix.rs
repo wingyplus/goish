@@ -22,10 +22,9 @@ use crate::types::int;
 fn read_whole_file(path: &str) -> Option<Vec<u8>> {
     let mut path_bytes: Vec<u8> = alloc::vec::Vec::from(path.as_bytes());
     path_bytes.push(0);
-    let raw = unsafe {
-        crate::syscall::syscall3(crate::syscall::SYS_OPEN, path_bytes.as_ptr() as usize, 0, 0)
-    };
-    let fd = raw as i32; // goishlint:ignore GOISH005 - a kernel fd, not a Go value
+    // The `Open` wrapper rather than a raw `syscall3(SYS_OPEN, …)`:
+    // arm64 has no `open`, only `openat`, which the wrapper takes.
+    let fd = crate::syscall::Open(path_bytes.as_ptr(), 0, 0);
     if fd < 0 {
         return None;
     }

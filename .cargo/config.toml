@@ -21,3 +21,41 @@ rustflags = [
     # reserving RBP. Required by `runtime::segv::walk_frames`.
     "-C", "force-frame-pointers=yes",
 ]
+
+# Linux/aarch64 — same bare-metal contract as x86_64. Every flag above
+# applies verbatim: arm64 Linux has no crt0 we want, no libc we link,
+# and the static/no-dynamic-linker combination is what makes `ldd`
+# report "not a dynamic executable". Frame pointers are likewise
+# required — AAPCS64's frame record is [x29]/[x29+8], the same shape
+# the SIGSEGV walker already relies on for [rbp]/[rbp+8].
+#
+# This target is NOT the `[build]` default; pass `--target
+# aarch64-unknown-linux-gnu` explicitly. On a macOS host you must also
+# point cargo at a cross linker — see scripts/cross_lld.py.
+[target.aarch64-unknown-linux-gnu]
+rustflags = [
+    # aarch64-only, and load-bearing for a libc-free build. LLVM's
+    # default "outline atomics" route every atomic RMW through
+    # `__aarch64_ldadd*` helpers in compiler_builtins, which pick an LSE
+    # or an LL/SC implementation at runtime by asking glibc's
+    # `getauxval(AT_HWCAP)`. With `-nodefaultlibs` there is no glibc, so
+    # the link fails on an undefined `getauxval`. Turning the feature off
+    # makes LLVM emit the baseline armv8-a `ldxr`/`stxr` sequences
+    # inline, with no runtime dispatch and no libc dependency.
+    #
+    # `+lse` would also link, by emitting LSE instructions
+    # unconditionally — but that silently raises the binary's floor to
+    # armv8.1 and is an M11 (CPU feature detection) decision, not a build
+    # flag to slip in here.
+    #
+    # rustc warns that `outline-atomics` is "not stably supported"; that
+    # is expected and there is no stable spelling of "do not call libc
+    # from compiler_builtins". Revisit if the warning becomes an error.
+    "-C", "target-feature=-outline-atomics",
+    "-C", "link-arg=-nostartfiles",
+    "-C", "link-arg=-nodefaultlibs",
+    "-C", "link-arg=-static",
+    "-C", "link-arg=-Wl,--no-dynamic-linker",
+    "-C", "relocation-model=static",
+    "-C", "force-frame-pointers=yes",
+]

@@ -130,17 +130,10 @@ fn cooperative_preempt_check() {
     // the M's stale sched stack.
     //
     // Discriminator: cooperative yield is only safe when we are
-    // actually running on G's user stack. Read RSP and compare
+    // actually running on G's user stack. Read SP and compare
     // against `g.stack.base..g.stack.top`; if not in range, we're
     // still on M's scheduler stack — skip the yield.
-    let rsp: usize;
-    unsafe {
-        core::arch::asm!(
-            "mov {}, rsp",
-            out(reg) rsp,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
+    let rsp: usize = unsafe { crate::runtime::sched::tls::stack_pointer() };
     let stack_base = g_ref.stack.base();
     let stack_top = g_ref.stack.top();
     if rsp < stack_base || rsp >= stack_top {

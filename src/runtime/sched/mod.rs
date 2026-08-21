@@ -54,6 +54,16 @@ mod p;
 mod scheduler;
 mod stack;
 pub mod stackpool;
+pub(crate) mod tls;
+
+#[cfg(target_arch = "x86_64")]
+mod gobuf_asm_amd64;
+#[cfg(target_arch = "aarch64")]
+mod gobuf_asm_arm64;
+#[cfg(target_arch = "x86_64")]
+mod grow_asm_amd64;
+#[cfg(target_arch = "aarch64")]
+mod grow_asm_arm64;
 
 pub use g::{GStatus, G, SELECT_WAIT_MAX};
 pub use gobuf::{gogo, make_context, make_context_gogo, swap_context, Gobuf};

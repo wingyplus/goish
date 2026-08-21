@@ -40,7 +40,6 @@
 // saved register set in `ucontext`. Keeping the two paths separate
 // avoids overloading the established os::signal handler shape.
 
-use core::arch::naked_asm;
 use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use crate::runtime::sched::{current_g, current_m, current_m_locks, GStatus, Gosched};
@@ -116,8 +115,8 @@ pub const REG_EFL: usize = 17;
 // x87, SSE, AVX, AVX-512 opmasks/ZMM: AMX and unrelated state such as PKRU
 // require a separate runtime contract and are intentionally not claimed here.
 const SIMD_XFEATURES: u64 = 0xe7;
-static FP_STATE_MASK: AtomicU64 = AtomicU64::new(0); // zero selects FXSAVE
-static FP_STATE_SIZE: AtomicUsize = AtomicUsize::new(512);
+pub(super) static FP_STATE_MASK: AtomicU64 = AtomicU64::new(0); // zero selects FXSAVE
+pub(super) static FP_STATE_SIZE: AtomicUsize = AtomicUsize::new(512);
 static FP_STATE_READY: AtomicU8 = AtomicU8::new(0);
 
 /// Minimum headroom for the FXSAVE fallback. Includes the red zone/resume
@@ -127,6 +126,7 @@ static FP_STATE_READY: AtomicU8 = AtomicU8::new(0);
 pub const ASYNC_PREEMPT_STACK: usize = 160 + 128 + 63 + 8 + 4096 + 512;
 
 // go: none — standard-format XSAVE size for the vector state we preserve.
+#[cfg(target_arch = "x86_64")]
 fn fp_state_layout() -> (u64, usize) {
     use core::arch::x86_64::{__cpuid, __cpuid_count, _xgetbv};
     let features = __cpuid(1).ecx;
@@ -150,6 +150,12 @@ fn fp_state_layout() -> (u64, usize) {
         }
     }
     return (mask, size);
+}
+
+// arm64 has no XSAVE; its trampoline (M8) saves a fixed register set.
+#[cfg(not(target_arch = "x86_64"))]
+fn fp_state_layout() -> (u64, usize) {
+    (0, 512)
 }
 
 // go: none — publish once before installing the signal handler. Reinstalling
@@ -182,6 +188,13 @@ pub fn async_preempt_stack() -> usize {
 // the trampoline's *exact* PC range for `is_in_trampoline`. Without
 // this, a fixed-size bound would catch unrelated text under LTO
 // (functions sharing the same `.text` section).
+// The trampoline body lives one file per target — see
+// `runtime/preempt_asm_amd64.rs` / `runtime/preempt_asm_arm64.rs`.
+#[cfg(target_arch = "x86_64")]
+pub use super::preempt_asm_amd64::goish_async_preempt;
+#[cfg(target_arch = "aarch64")]
+pub use super::preempt_asm_arm64::goish_async_preempt;
+
 extern "C" {
     fn goish_async_preempt_end();
     fn goish_swap_context_end();
@@ -320,7 +333,7 @@ fn is_in_mcall_asm(pc: u64) -> bool {
 #[no_mangle]
 #[inline(never)]
 #[link_section = "goish_rt_text"]
-extern "C" fn goish_async_preempt2() {
+pub(super) extern "C" fn goish_async_preempt2() {
     // **Yield via Gosched, not gopark+commit.**
     //
     // Earlier versions used `gopark(preempt_park_commit, _)` where
@@ -372,209 +385,6 @@ extern "C" fn goish_async_preempt2() {
 //
 // Calling convention: `extern "C"` so `call` semantics match SysV.
 // Naked: no Rust prologue/epilogue.
-
-#[unsafe(naked)]
-#[no_mangle]
-pub unsafe extern "C" fn goish_async_preempt() {
-    naked_asm!(
-        // ── Prologue ──
-        //
-        // **EFLAGS preservation discipline (entry side, M28-fix-2).**
-        // The kernel preserves the user's EFLAGS across signal
-        // delivery — `rt_sigreturn` restores `ucontext.gregs[REG_EFL]`
-        // to RFLAGS before transferring control to our modified
-        // `ucontext.RIP`. So at trampoline entry, RFLAGS *is* the
-        // user's pre-SIGURG flags.
-        //
-        // Until we `pushfq` to capture them, NO flag-clobbering
-        // instruction may execute — otherwise pushfq saves garbage
-        // and the matching epilogue `popfq` restores garbage,
-        // breaking the user's resume-PC conditional branch (e.g.
-        // a `jne` after a `cmp` from before SIGURG hit). Use `lea`
-        // for RSP arithmetic in this window; `push`/`mov` are
-        // flag-preserving by ISA spec.
-        //
-        // Mirrors the epilogue's "`popfq` last among flag-touchers"
-        // discipline: the prologue's `pushfq` is FIRST among
-        // flag-touchers.
-
-        // Step 1: shift SP below the user's red zone (`[SP_user-128,
-        // SP_user)`). Anything we push from here on lives strictly
-        // below the red zone, leaving leaf-fn locals untouched.
-        // `lea` (not `sub`) preserves user's EFLAGS for pushfq below.
-        "lea rsp, [rsp - 128]",                      // rsp = SP_user-136
-
-        // Step 2 (M18b-δ.3): advance RSP past the resume-PC slot —
-        // the handler has *already* written the resume PC to
-        // [SP_user-144] (see goish_preempt_sigtramp). With the
-        // SIGURG handler running on the per-M alt signal stack
-        // (SA_ONSTACK + sigaltstack), the kernel never touches the
-        // user G's stack during signal delivery, so the handler's
-        // write is the only writer for this slot until the epilogue
-        // reads it. `lea` (not `sub`) preserves EFLAGS.
-        "lea rsp, [rsp - 8]",                        // rsp = SP_user-144 (slot written by handler)
-
-        // Step 3: standard frame pointer. `push` and `mov` are
-        // both ISA-spec flag-preserving — EFLAGS still = user's.
-        "push rbp",                                  // [SP_user-152] = user BP
-        "mov rbp, rsp",                              // rbp = SP_user-152 — frame anchor
-
-        // Step 4: save user's EFLAGS. `pushfq` MUST be the first
-        // flag-touching instruction in the trampoline; everything
-        // above is `lea`/`push`/`mov` (all flag-preserving).
-        "pushfq",                                    // [SP_user-160] = user FLAGS
-
-        // Step 5: fixed GPR area at rbp-136. Save every GPR before
-        // using scratch registers to allocate the variable FP area.
-        "sub rsp, 128",
-
-        // Step 6: save 14 GPRs (rax,rcx,rdx,rbx,rsi,rdi,r8-r15) at
-        // offsets 0..104 (RBP and RSP are not in the save area —
-        // RBP is on stack via pushq, RSP is implicit).
-        "mov [rsp + 0],   rax",
-        "mov [rsp + 8],   rcx",
-        "mov [rsp + 16],  rdx",
-        "mov [rsp + 24],  rbx",
-        "mov [rsp + 32],  rsi",
-        "mov [rsp + 40],  rdi",
-        "mov [rsp + 48],  r8",
-        "mov [rsp + 56],  r9",
-        "mov [rsp + 64],  r10",
-        "mov [rsp + 72],  r11",
-        "mov [rsp + 80],  r12",
-        "mov [rsp + 88],  r13",
-        "mov [rsp + 96],  r14",
-        "mov [rsp + 104], r15",
-
-        // Step 7: variable-size FP area, owned by this suspended G's
-        // frame (never per-M scratch). Both paths use 64-byte alignment,
-        // which also satisfies the SysV call alignment below.
-        "sub rsp, qword ptr [rip + {state_size}]",
-        "and rsp, -64",
-        "mov rax, qword ptr [rip + {state_mask}]",
-        "test rax, rax",
-        "jz 2f",
-        // XSAVE does not initialize all header/reserved bits. This is a
-        // fresh stack image, so clear its header with INTEGER stores:
-        // vector instructions here could destroy the state being saved.
-        "mov qword ptr [rsp + 512], 0",
-        "mov qword ptr [rsp + 520], 0",
-        "mov qword ptr [rsp + 528], 0",
-        "mov qword ptr [rsp + 536], 0",
-        "mov qword ptr [rsp + 544], 0",
-        "mov qword ptr [rsp + 552], 0",
-        "mov qword ptr [rsp + 560], 0",
-        "mov qword ptr [rsp + 568], 0",
-        "mov rdx, rax",
-        "shr rdx, 32",
-        "xsave64 [rsp]",
-        // Avoid AVX -> legacy SSE transition costs in scheduler code.
-        // Only do this after saving, and only if OS-enabled AVX is present.
-        "test eax, 4",
-        "jz 3f",
-        "vzeroupper",
-        "jmp 3f",
-        "2:",
-        "fxsave64 [rsp]",
-        "3:",
-
-        // ── Body ──
-        // Gosched manages m.locks around the scheduler transition.
-        // The trampoline's PC range is filtered by `is_in_trampoline(PC)` in the
-        // handler, covering the prologue/epilogue windows where
-        // m.locks could be 0.
-        "call {async_preempt2}",
-
-        // ── Epilogue ──
-        // Restore FP/vector state before tearing down this G's frame.
-        // The masks/layout are immutable even if the G migrated to another M.
-        "mov rax, qword ptr [rip + {state_mask}]",
-        "test rax, rax",
-        "jz 4f",
-        "mov rdx, rax",
-        "shr rdx, 32",
-        "xrstor64 [rsp]",
-        "jmp 5f",
-        "4:",
-        "fxrstor64 [rsp]",
-        "5:",
-        // No vector instructions or Rust calls after restoring state.
-        "lea rsp, [rbp - 136]",
-        "mov rax, [rsp + 0]",
-        "mov [rbp + 16], rax",
-
-        // Restore the other GPRs (rax stays as scratch — restored
-        // below from the [rbp+16] snapshot, BEFORE popfq).
-        "mov rcx, [rsp + 8]",
-        "mov rdx, [rsp + 16]",
-        "mov rbx, [rsp + 24]",
-        "mov rsi, [rsp + 32]",
-        "mov rdi, [rsp + 40]",
-        "mov r8,  [rsp + 48]",
-        "mov r9,  [rsp + 56]",
-        "mov r10, [rsp + 64]",
-        "mov r11, [rsp + 72]",
-        "mov r12, [rsp + 80]",
-        "mov r13, [rsp + 88]",
-        "mov r14, [rsp + 96]",
-        "mov r15, [rsp + 104]",
-
-        // ── EFLAGS preservation discipline (M28-fix, hardened) ──
-        //
-        // After `popfq` restores user EFLAGS, the user's resume PC
-        // may be a conditional branch reading ZF/CF/SF set by a
-        // `cmp`/`test` immediately before the SIGURG injection
-        // (concretely: `current_m`'s alignment check
-        // `cmp $0x0, %rax; jne <panic>` — saved EFLAGS reflects
-        // that cmp; ANY flag-clobbering instruction between popfq
-        // and the resume jmp causes JNE to branch on stale flags
-        // and panic spuriously).
-        //
-        // Mirroring Go's `asyncPreempt` epilogue shape (which ends
-        // `…; POPFQ; POPQ BP; RET` — three architecturally
-        // flag-preserving instructions): we restore rax BEFORE
-        // popfq (where flag-clobbering is harmless because the
-        // saved-flag slot is about to overwrite EFLAGS), then
-        // commit the post-popfq window to ONLY:
-        //
-        //     popfq            ; restores user FLAGS
-        //     pop rbp          ; ISA-spec: flag-preserving
-        //     lea rsp, [...]   ; SIB arithmetic, flag-preserving
-        //     jmp qword [mem]  ; memory-operand JMP, flag-preserving
-        //
-        // No `add`/`sub`/`xor`/`test`/`cmp`/`inc`/`dec`/`and`/`or`
-        // may appear between popfq and the resume jmp. If you need
-        // RSP arithmetic, use `lea`.
-
-        // Restore user's rax from the [rbp+16] snapshot — placed
-        // BEFORE popfq deliberately so that even though `mov` is
-        // flag-preserving, we shrink the post-popfq window to
-        // strictly the smallest set of necessary instructions.
-        "mov rax, [rbp + 16]",                       // rax = user_rax
-
-        // Reset rsp to the popfq slot via rbp anchor (lea = flag-safe,
-        // but flags don't matter yet — popfq is next).
-        "lea rsp, [rbp - 8]",                        // rsp = SP_user-160 (popfq slot)
-
-        // ─── BEGIN flag-sensitive window ──────────────────────────
-        "popfq",                                     // rsp = SP_user-152, FLAGS = user's
-        "pop rbp",                                   // rsp = SP_user-144, rbp = user's (flag-safe)
-        "lea rsp, [rsp + 144]",                      // rsp = SP_user (flag-safe — lea)
-        "jmp qword ptr [rsp - 144]",                 // jump to resume_pc (flag-safe — mem-op JMP)
-        // ─── END flag-sensitive window ────────────────────────────
-
-        // Emit a global end-of-trampoline label inline so
-        // `is_in_trampoline` can compute the exact PC range. `int3`
-        // ensures any errant fall-through traps loudly.
-        ".globl goish_async_preempt_end",
-        "goish_async_preempt_end:",
-        "int3",
-
-        async_preempt2 = sym goish_async_preempt2,
-        state_size = sym FP_STATE_SIZE,
-        state_mask = sym FP_STATE_MASK,
-    )
-}
 
 // ─── Handler ───────────────────────────────────────────────────────
 //
@@ -743,7 +553,7 @@ pub fn install() {
             | syscall::SA_RESTORER
             | syscall::SA_RESTART
             | syscall::SA_ONSTACK,
-        sa_restorer: syscall::SigreturnTrampoline as *const () as usize,
+        sa_restorer: syscall::sigreturn_restorer(),
         sa_mask: 0,
     };
     unsafe {

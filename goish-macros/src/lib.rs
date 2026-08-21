@@ -41,21 +41,18 @@ pub fn main(_attr: TokenStream, item: TokenStream) -> TokenStream {
         _ => panic!("#[goish::main] must be placed on `fn main() {{ ... }}`"),
     };
 
-    // 1) ELF entry point — assembly stub. Reads argc/argv off the
-    //    kernel-supplied stack, aligns rsp to 16 bytes, calls __goish_rt0.
-    //    `ud2` is dead code (rt0 is `-> !`); just makes any accidental
-    //    return crash loudly.
+    // 1) ELF entry point. The stub itself lives in `goish::runtime::entry`
+    //    as a `macro_rules!`, and this emits only the call to it.
+    //
+    //    A proc macro is compiled for and runs on the HOST, so any
+    //    `cfg!(target_arch = …)` written here would read the host's
+    //    values rather than the target's — wrong in exactly the case
+    //    that matters, a cross build. Emitting an opaque
+    //    `::goish::__goish_entry!()` moves the decision to rustc at
+    //    target-compile time, and keeps `goish-macros` free of any
+    //    target dimension at all.
     let asm: TokenStream = r#"
-        ::core::arch::global_asm!(
-            ".global _start",
-            "_start:",
-            "    mov rdi, [rsp]",
-            "    lea rsi, [rsp + 8]",
-            "    xor rbp, rbp",
-            "    and rsp, -16",
-            "    call __goish_rt0",
-            "    ud2",
-        );
+        ::goish::__goish_entry!();
     "#
     .parse()
     .expect("goish::main: invalid asm preamble");

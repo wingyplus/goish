@@ -37,6 +37,7 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, AtomicUsize, Ordering,
 };
 
+use super::tls;
 use super::g::G;
 use super::p::P;
 use crate::runtime::note::Note;
@@ -327,20 +328,7 @@ pub fn acquirem() {
     if !is_tls_ready() {
         return;
     }
-    unsafe {
-        #[cfg(not(feature = "ffi-system-tls"))]
-        core::arch::asm!(
-            "lock add dword ptr fs:[{off}], 1",
-            off = const core::mem::offset_of!(MStorage, locks),
-            options(nostack),
-        );
-        #[cfg(feature = "ffi-system-tls")]
-        core::arch::asm!(
-            "lock add dword ptr gs:[{off}], 1",
-            off = const core::mem::offset_of!(MStorage, locks),
-            options(nostack),
-        );
-    }
+    unsafe { tls::locks_inc::<{ core::mem::offset_of!(MStorage, locks) }>() }
 }
 
 /// Decrement the calling M's non-yielding-section depth counter.
@@ -356,25 +344,8 @@ pub fn releasem() {
     if !is_tls_ready() {
         return;
     }
-    let prev: u32;
-    unsafe {
-        #[cfg(not(feature = "ffi-system-tls"))]
-        core::arch::asm!(
-            "mov {p:e}, -1",
-            "lock xadd dword ptr fs:[{off}], {p:e}",
-            p = out(reg) prev,
-            off = const core::mem::offset_of!(MStorage, locks),
-            options(nostack),
-        );
-        #[cfg(feature = "ffi-system-tls")]
-        core::arch::asm!(
-            "mov {p:e}, -1",
-            "lock xadd dword ptr gs:[{off}], {p:e}",
-            p = out(reg) prev,
-            off = const core::mem::offset_of!(MStorage, locks),
-            options(nostack),
-        );
-    }
+    let prev: u32 =
+        unsafe { tls::locks_dec::<{ core::mem::offset_of!(MStorage, locks) }>() };
     // Underflow tripwire. `locks` is per-M state: a bump/drop pair
     // that straddles a park (gopark can resume on a different M)
     // leaves the parking M at +1 forever and wraps the resuming M's
@@ -396,8 +367,7 @@ pub fn releasem() {
         unsafe {
             let msg = b"releasem UNDERFLOW, caller PCs:\n";
             crate::syscall::Write(crate::syscall::STDERR, msg.as_ptr(), msg.len());
-            let mut rbp: u64;
-            core::arch::asm!("mov {}, rbp", out(reg) rbp, options(nomem, nostack));
+            let mut rbp: u64 = tls::frame_pointer();
             let mut hops = 0;
             while hops < 10 && rbp != 0 && rbp & 7 == 0 {
                 let next = *(rbp as *const u64);
@@ -547,22 +517,15 @@ pub fn setup_main_tls() {
     // system TLS while Goish uses GS.
     // Zero in static builds (no ld.so, nothing to preserve).
     // NB: ARCH_GET_FS *writes* the base to the given address.
-    let mut saved_base: usize = 0;
-    let r = syscall::ArchPrctl(syscall::ARCH_GET_FS, &mut saved_base as *mut usize as usize);
-    if r == 0 && saved_base != 0 {
+    let saved_base: usize = unsafe { tls::base() };
+    if saved_base != 0 {
         PRE_GOISH_FS_BASE.store(saved_base, Ordering::Release);
     }
     MAIN_M.init_tls_self();
     let tls_base = MAIN_M.tls_base();
-    #[cfg(not(feature = "ffi-system-tls"))]
-    let r = syscall::ArchPrctl(syscall::ARCH_SET_FS, tls_base);
-    #[cfg(feature = "ffi-system-tls")]
-    let r = syscall::ArchPrctl(syscall::ARCH_SET_GS, tls_base);
+    let r = unsafe { tls::set_base(tls_base) };
     if r != 0 {
-        #[cfg(not(feature = "ffi-system-tls"))]
-        const MSG: &[u8] = b"goish: arch_prctl(ARCH_SET_FS) failed\n";
-        #[cfg(feature = "ffi-system-tls")]
-        const MSG: &[u8] = b"goish: arch_prctl(ARCH_SET_GS) failed\n";
+        const MSG: &[u8] = b"goish: planting the thread pointer failed\n";
         syscall::Write(syscall::STDERR, MSG.as_ptr(), MSG.len());
         syscall::Exit(2);
     }
@@ -614,14 +577,7 @@ pub fn setup_main_g0() {
         Some(pair) => pair,
         None => {
             // Heuristic fallback: 8 MiB stack with current rsp inside.
-            let rsp: usize;
-            unsafe {
-                core::arch::asm!(
-                    "mov {}, rsp",
-                    out(reg) rsp,
-                    options(nomem, nostack, preserves_flags),
-                );
-            }
+            let rsp: usize = unsafe { tls::stack_pointer() };
             const FALLBACK_STACK: usize = 8 * 1024 * 1024;
             // Round rsp up to nearest FALLBACK_STACK boundary as approximate top.
             let top = (rsp + FALLBACK_STACK - 1) & !(FALLBACK_STACK - 1);
@@ -663,22 +619,7 @@ pub fn setup_main_g0() {
 /// uninitialized at process entry; reading it would yield garbage.
 #[inline]
 pub fn current_m() -> &'static SpinLock<M> {
-    let ptr: *const SpinLock<M>;
-    unsafe {
-        #[cfg(not(feature = "ffi-system-tls"))]
-        core::arch::asm!(
-            "mov %fs:0, {0}",
-            out(reg) ptr,
-            options(nostack, preserves_flags, att_syntax),
-        );
-        #[cfg(feature = "ffi-system-tls")]
-        core::arch::asm!(
-            "mov %gs:0, {0}",
-            out(reg) ptr,
-            options(nostack, preserves_flags, att_syntax),
-        );
-        &*ptr
-    }
+    unsafe { &*(tls::slot0() as *const SpinLock<M>) }
 }
 
 /// Pointer to the calling thread's `MStorage`. Recovers the storage

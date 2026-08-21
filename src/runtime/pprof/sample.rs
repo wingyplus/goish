@@ -153,7 +153,7 @@ pub(crate) fn start(hz: i64) -> bool {
         sa_flags: crate::syscall::SA_SIGINFO
             | crate::syscall::SA_RESTORER
             | crate::syscall::SA_ONSTACK,
-        sa_restorer: crate::syscall::SigreturnTrampoline as *const () as usize,
+        sa_restorer: crate::syscall::sigreturn_restorer(),
         sa_mask: 0,
     };
     let r = unsafe {

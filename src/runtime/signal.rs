@@ -84,7 +84,7 @@ pub fn install_handler(sig: i32) {
     let sa = syscall::Sigaction {
         sa_handler: goish_sigtramp as *const () as usize,
         sa_flags: syscall::SA_RESTORER | syscall::SA_RESTART,
-        sa_restorer: syscall::SigreturnTrampoline as *const () as usize,
+        sa_restorer: syscall::sigreturn_restorer(),
         sa_mask: 0,
     };
     unsafe {
@@ -178,7 +178,7 @@ pub fn ignore_signal(sig: i32) {
     let sa = syscall::Sigaction {
         sa_handler: 1, // SIG_IGN
         sa_flags: syscall::SA_RESTORER | syscall::SA_RESTART,
-        sa_restorer: syscall::SigreturnTrampoline as *const () as usize,
+        sa_restorer: syscall::sigreturn_restorer(),
         sa_mask: 0,
     };
     unsafe {

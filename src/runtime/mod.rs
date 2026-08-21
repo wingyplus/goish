@@ -16,7 +16,9 @@
 use crate::syscall;
 
 pub mod args;
+pub mod cputicks;
 pub mod debug;
+pub mod entry;
 pub mod flags;
 pub mod heap;
 pub mod lockfree_ring;
@@ -29,6 +31,10 @@ pub mod note;
 pub mod pkginit;
 pub mod pprof;
 pub mod preempt;
+#[cfg(target_arch = "x86_64")]
+mod preempt_asm_amd64;
+#[cfg(target_arch = "aarch64")]
+mod preempt_asm_arm64;
 pub mod rand;
 pub mod rt_section;
 pub mod sched;
@@ -302,18 +308,19 @@ pub fn GoroutineProfile(_p: crate::goslice::slice<()>) -> (crate::types::int, bo
 // safe bound, so `Caller` returns `ok == false` and `Callers` returns
 // `0` — matching Go's "unable to recover information" contract.
 
-/// Read the caller's frame-base pointer (`rbp`). `#[inline(never)]` so
-/// the call site emits a real `call` and this helper sets up its own
-/// SysV frame (`push rbp; mov rbp, rsp`) — the returned value is *this
-/// helper's* `rbp`. The caller accounts for that extra frame in `skip`.
+/// Read the caller's frame-base pointer. `#[inline(never)]` so the call
+/// site emits a real call and this helper sets up its own frame — the
+/// returned value is *this helper's* frame pointer. The caller accounts
+/// for that extra frame in `skip`.
+///
+/// The register is per-target (`rbp` / `x29`), but the chain it heads is
+/// not: AAPCS64's frame record is `[x29]` = caller's x29, `[x29+8]` =
+/// return address, the same shape as SysV's `[rbp]`/`[rbp+8]`, so the
+/// walker below ports unchanged.
 #[inline(never)]
 fn caller_rbp() -> u64 {
-    let v: u64;
     // SAFETY: a plain register read; no memory touched, no stack use.
-    unsafe {
-        core::arch::asm!("mov {}, rbp", out(reg) v, options(nomem, nostack));
-    }
-    v
+    unsafe { crate::runtime::sched::tls::frame_pointer() }
 }
 
 /// Walk the current goroutine's `rbp` chain into `out`, returning the
@@ -716,12 +723,17 @@ pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     // already dispatching by the time `__goish_main` runs. Each
     // worker thread has its own MStorage with a fresh fs base; the
     // main M shares the global SCHED runq with them.
+    // Worker Ms park in the scheduler, which needs a context switch to
+    // dispatch anything — M5 on arm64. Spawning them before that exists
+    // would put threads into `m_schedule_loop` with no way out.
+    #[cfg(target_arch = "x86_64")]
     sched::bootstrap_workers(nprocs);
 
     // Spawn the sysmon thread (M18a). Owns the global timer heap;
     // wakes timer-parked goroutines via `time::Sleep`. Must come
     // after bootstrap_workers so register_m_storage's allocator is
     // up.
+    #[cfg(target_arch = "x86_64")]
     sysmon::start_sysmon();
 
     // Ignore SIGPIPE.
@@ -746,7 +758,7 @@ pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
         let sa = syscall::Sigaction {
             sa_handler: 1, // SIG_IGN
             sa_flags: syscall::SA_RESTORER | syscall::SA_RESTART,
-            sa_restorer: syscall::SigreturnTrampoline as *const () as usize,
+            sa_restorer: syscall::sigreturn_restorer(),
             sa_mask: 0,
         };
         let _ = syscall::RtSigaction(syscall::SIGPIPE, &sa, core::ptr::null_mut());
@@ -804,6 +816,10 @@ pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     // Install the SIGURG preempt handler (M18b-α phase B).
     // Decision-only: counts would-be preempts but does not modify
     // ucontext yet. Phase C wires the asyncPreempt trampoline.
+    // The SIGURG handler injects a call to the asyncPreempt trampoline,
+    // which is M8 on arm64. Arming it before that exists would turn every
+    // preemption into the trampoline's own abort.
+    #[cfg(target_arch = "x86_64")]
     preempt::install();
 
     // Initialise the in-process DWARF symboliser. Mmaps
@@ -862,6 +878,30 @@ pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     // of the fix and the half that generalises — a leaked goroutine
     // stops being able to hold the process at all. The sleeper leak
     // itself is still worth closing, and is tracked separately.
+    // ─── arm64: the staged boot ──────────────────────────────────────
+    //
+    // Everything above this point runs on arm64 today — the entry stub,
+    // args, flags, the thread pointer, dlmalloc, mheap, mcentral, the P
+    // array and the main g0. What does not is the *dispatch*: putting
+    // `main` on a goroutine requires `gogo`, and `gogo` is M5.
+    //
+    // So the main body is called directly on g0, exactly as goish itself
+    // did before M17b-ε, and with the same known limitation: `current_g()`
+    // is `None` while it runs, so any blocking primitive — channel
+    // send/recv, `WaitGroup::Wait`, contended `Mutex` — fatals with
+    // "outside of any goroutine" instead of parking. That is the M1
+    // contract on this target and the reason the arm64 allowlist starts
+    // at `hello` rather than at the channel examples.
+    //
+    // M5 deletes this branch.
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe { __goish_main() };
+        // Go: `exit(0)` at the foot of runtime.main.
+        crate::syscall::Exit(0);
+    }
+
+    #[cfg(target_arch = "x86_64")]
     sched::newproc_with_stack_at(
         8 * 1024 * 1024,
         file!(),
@@ -881,7 +921,17 @@ pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     // exit_group(2). (`m_schedule_loop`, not the public `schedule()`:
     // the public entry is `-> ()` because from inside a goroutine it
     // acts as a returning drain barrier.)
-    sched::m_schedule_loop()
+    #[cfg(target_arch = "x86_64")]
+    sched::m_schedule_loop();
+
+    // Unreachable on amd64 (`m_schedule_loop` is `-> !`); on arm64 the
+    // block above exits the process. Present so the function still
+    // type-checks as `-> !` under both cfgs.
+    #[allow(unreachable_code)]
+    {
+        crate::syscall::Exit(0);
+        loop {}
+    }
 }
 
 // ─── panic handler ─────────────────────────────────────────────────────

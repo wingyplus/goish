@@ -17,12 +17,19 @@
 // - psm/src/lib.rs:181-207 (on_stack closure marshalling)
 // - stacker/src/lib.rs:148-168 (_grow)
 
-use core::arch::naked_asm;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::syscall;
+
+// The assembly bodies live one file per target — see
+// `sched/grow_asm_amd64.rs` / `sched/grow_asm_arm64.rs`.
+#[cfg(target_arch = "x86_64")]
+pub(crate) use super::grow_asm_amd64::{current_sp, goish_on_stack};
+#[cfg(target_arch = "aarch64")]
+pub(crate) use super::grow_asm_arm64::{current_sp, goish_on_stack};
+
 
 // ─── monitoring counters ─────────────────────────────────────────────
 //
@@ -137,47 +144,7 @@ const GROW_TIER_2_RED_ZONE: usize = 8 * 1024;
 
 // ─── leaf asm: read RSP ──────────────────────────────────────────────
 
-/// Returns the current value of RSP at the call site, accounting for
-/// the 8 bytes the CALL instruction pushed. Mirrors `psm::stack_pointer`.
-#[unsafe(naked)]
-extern "C" fn current_sp() -> usize {
-    naked_asm!(
-        "lea rax, [rsp + 8]", // skip our own return address
-        "ret",
-    )
-}
-
 // ─── pivot trampoline (psm/x86_64.s:68-85) ───────────────────────────
-
-/// Pivot RSP onto `new_sp`, call `callback(data, ret_ptr)`, pivot back.
-///
-/// SysV ABI inputs:
-///   rdi = data        — pointer to closure storage
-///   rsi = ret_ptr     — pointer to MaybeUninit<R> for the return value
-///   rdx = callback    — extern "sysv64" fn(*mut u8, *mut u8)
-///   rcx = new_sp      — top of the new stack region (must be 16-aligned)
-///
-/// Saves old RBP/RSP via the standard prologue, pivots RSP to `rcx`,
-/// runs `callback` (which reads the closure from `data` and writes the
-/// result through `ret_ptr`), then restores via RBP. A normal `ret`
-/// returns control on the original stack.
-#[unsafe(naked)]
-unsafe extern "C" fn goish_on_stack(
-    _data: *mut u8,
-    _ret_ptr: *mut u8,
-    _callback: extern "C" fn(*mut u8, *mut u8),
-    _new_sp: *mut u8,
-) {
-    naked_asm!(
-        "push rbp",
-        "mov  rbp, rsp",
-        "mov  rsp, rcx", // PIVOT to new stack
-        "call rdx",      // rdi/rsi already correct
-        "mov  rsp, rbp", // PIVOT back
-        "pop  rbp",
-        "ret",
-    )
-}
 
 // ─── closure marshalling ─────────────────────────────────────────────
 

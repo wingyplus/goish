@@ -509,8 +509,10 @@ fn chain_to_default() {
 pub fn install() {
     let sa = syscall::Sigaction {
         sa_handler: goish_segv_sigtramp as *const () as usize,
-        sa_flags: syscall::SA_SIGINFO | syscall::SA_RESTORER | syscall::SA_ONSTACK,
-        sa_restorer: syscall::SigreturnTrampoline as *const () as usize,
+        sa_flags: syscall::SA_SIGINFO
+            | syscall::SA_RESTORER
+            | syscall::SA_ONSTACK,
+        sa_restorer: syscall::sigreturn_restorer(),
         sa_mask: 0,
     };
     unsafe {

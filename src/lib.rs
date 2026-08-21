@@ -115,6 +115,7 @@ pub mod sort;
 pub mod strconv;
 pub mod strings;
 pub mod sync;
+pub mod sys;
 pub mod syscall;
 pub mod term;
 pub mod testing;

@@ -34,70 +34,11 @@
 //   rax = return (negative = -errno)
 //   clobbers: rcx, r11, plus memory.
 
-use core::arch::asm;
 
 // ─── syscall numbers (asm-generic / x86_64) ────────────────────────────
-pub const SYS_READ: usize = 0;
-pub const SYS_WRITE: usize = 1;
-pub const SYS_OPEN: usize = 2;
-pub const SYS_CLOSE: usize = 3;
-pub const SYS_MMAP: usize = 9;
-pub const SYS_MPROTECT: usize = 10;
-pub const SYS_MUNMAP: usize = 11;
-pub const SYS_MADVISE: usize = 28;
-pub const SYS_CLONE: usize = 56;
-pub const SYS_EXIT: usize = 60; // per-thread exit (vs SYS_EXIT_GROUP)
-pub const SYS_SCHED_YIELD: usize = 24;
-pub const SYS_NANOSLEEP: usize = 35;
-pub const SYS_ARCH_PRCTL: usize = 158;
-pub const SYS_GETTID: usize = 186;
-// go: none — goish-only: Go's syscall package names these in
-// zerrors_linux_amd64.go; goish declares the two it uses.
-/// `setitimer(2)`.
-pub const SYS_SETITIMER: usize = 38;
-/// `getitimer(2)`.
-pub const SYS_GETITIMER: usize = 36;
-pub const SYS_CLOCK_GETTIME: usize = 228;
-pub const SYS_EXIT_GROUP: usize = 231;
-pub const SYS_SCHED_GETAFFINITY: usize = 204;
-pub const SYS_FUTEX: usize = 202;
-pub const SYS_RT_SIGACTION: usize = 13;
-pub const SYS_RT_SIGRETURN: usize = 15;
-pub const SYS_GETPID: usize = 39;
-pub const SYS_KILL: usize = 62;
-pub const SYS_TGKILL: usize = 234;
-pub const SYS_SIGALTSTACK: usize = 131;
 // Socket family (M27a — net/http port).
-pub const SYS_SOCKET: usize = 41;
-pub const SYS_CONNECT: usize = 42;
-pub const SYS_ACCEPT: usize = 43;
-pub const SYS_SENDTO: usize = 44;
-pub const SYS_RECVFROM: usize = 45;
-pub const SYS_SHUTDOWN: usize = 48;
-pub const SYS_BIND: usize = 49;
-pub const SYS_LISTEN: usize = 50;
-pub const SYS_GETSOCKNAME: usize = 51;
-pub const SYS_GETPEERNAME: usize = 52;
-pub const SYS_SETSOCKOPT: usize = 54;
-pub const SYS_GETSOCKOPT: usize = 55;
-pub const SYS_FCNTL: usize = 72;
-pub const SYS_FSYNC: usize = 74;
-pub const SYS_GETCWD: usize = 79;
-pub const SYS_CHDIR: usize = 80;
-pub const SYS_ACCEPT4: usize = 288;
-pub const SYS_EPOLL_CREATE1: usize = 291;
-pub const SYS_EPOLL_CTL: usize = 233;
-pub const SYS_EPOLL_PWAIT: usize = 281;
-pub const SYS_EVENTFD2: usize = 290;
 // Terminal control (term port — QuCode T1).
-pub const SYS_IOCTL: usize = 16;
 // Process family (os/exec port — M27 follow-up).
-pub const SYS_FORK: usize = 57;
-pub const SYS_EXECVE: usize = 59;
-pub const SYS_WAIT4: usize = 61;
-pub const SYS_DUP2: usize = 33;
-pub const SYS_DUP3: usize = 292;
-pub const SYS_OPENAT: usize = 257;
 
 // Signal numbers (Linux). Mirror /usr/include/asm-generic/signal.h.
 pub const SIGHUP: i32 = 1;
@@ -220,85 +161,48 @@ pub const MADV_DONTNEED: i32 = 4;
 /// Sentinel returned by `mmap(2)` on failure (`(void*) -1`).
 pub const MAP_FAILED: *mut u8 = !0usize as *mut u8;
 
+// ─── raw syscall wrappers ──────────────────────────────────────────────
+//
+// The instruction itself lives in `crate::sys`, one file per target
+// (`sys/sys_linux_amd64.rs`, `sys/sys_linux_arm64.rs`). Re-exported here
+// so every wrapper below — and every caller of them — keeps the
+// `syscall::syscallN` path it has always used.
+//
+// The contract is unchanged: a non-negative kernel result, or a
+// negative `-errno`.
+pub use crate::sys::{syscall0, syscall1, syscall2, syscall3, syscall4, syscall6};
+
+// --- system-call numbers ----------------------------------------------
+//
+// One table per target, mirroring Go's `syscall/zsysnum_linux_*.go`.
+// Re-exported so `syscall::SYS_WRITE` resolves as it always has.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod zsysnum_linux_amd64;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub use zsysnum_linux_amd64::*;
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+mod zsysnum_linux_arm64;
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub use zsysnum_linux_arm64::*;
+
+// ─── naked-asm entry points ────────────────────────────────────────────
+//
+// `Clone` and the sigreturn restorer are whole functions written in
+// assembly, not wrappers around a syscall instruction, so they live in
+// `syscall/asm_linux_*.rs` — mirroring Go's own `syscall/asm_linux_*.s`
+// / `runtime/sys_linux_*.s` layout.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod asm_linux_amd64;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub use asm_linux_amd64::*;
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+mod asm_linux_arm64;
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub use asm_linux_arm64::*;
+
 // ─── raw syscall wrappers (x86-64) ─────────────────────────────────────
-
-/// 1-argument syscall.
-#[inline]
-pub unsafe fn syscall1(n: usize, a1: usize) -> isize {
-    let ret: isize;
-    asm!(
-        "syscall",
-        inlateout("rax") n => ret,
-        in("rdi") a1,
-        out("rcx") _,
-        out("r11") _,
-        options(nostack, preserves_flags),
-    );
-    ret
-}
-
-/// 3-argument syscall (write, read, open).
-#[inline]
-pub unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> isize {
-    let ret: isize;
-    asm!(
-        "syscall",
-        inlateout("rax") n => ret,
-        in("rdi") a1,
-        in("rsi") a2,
-        in("rdx") a3,
-        out("rcx") _,
-        out("r11") _,
-        options(nostack, preserves_flags),
-    );
-    ret
-}
-
-/// 4-argument syscall (newfstatat).
-#[inline]
-pub unsafe fn syscall4(n: usize, a1: usize, a2: usize, a3: usize, a4: usize) -> isize {
-    let ret: isize;
-    asm!(
-        "syscall",
-        inlateout("rax") n => ret,
-        in("rdi") a1,
-        in("rsi") a2,
-        in("rdx") a3,
-        in("r10") a4,
-        out("rcx") _,
-        out("r11") _,
-        options(nostack, preserves_flags),
-    );
-    ret
-}
-
-/// 6-argument syscall (mmap).
-#[inline]
-pub unsafe fn syscall6(
-    n: usize,
-    a1: usize,
-    a2: usize,
-    a3: usize,
-    a4: usize,
-    a5: usize,
-    a6: usize,
-) -> isize {
-    let ret: isize;
-    asm!(
-        "syscall",
-        inlateout("rax") n => ret,
-        in("rdi") a1,
-        in("rsi") a2,
-        in("rdx") a3,
-        in("r10") a4,
-        in("r8")  a5,
-        in("r9")  a6,
-        out("rcx") _,
-        out("r11") _,
-        options(nostack, preserves_flags),
-    );
-    ret
-}
 
 // ─── Go-shaped public API ──────────────────────────────────────────────
 
@@ -665,7 +569,25 @@ pub const O_PATH: i32 = 0o10_000_000;
 /// Returns the new fd on success, or a negative `-errno` on error.
 #[allow(non_snake_case)]
 pub fn Open(path: *const u8, flags: i32, mode: i32) -> i32 {
-    unsafe { syscall3(SYS_OPEN, path as usize, flags as usize, mode as usize) as i32 }
+    // Go: `syscall/syscall_linux.go:279-281` routes every Linux arch
+    // through the `*at` form with `AT_FDCWD`; arm64 has no legacy call
+    // to route to. See `zsysnum_linux_arm64.rs`.
+    //
+    // Go's line is `openat(_AT_FDCWD, path, mode|O_LARGEFILE, perm)`.
+    // The `|O_LARGEFILE` is not carried here because it is a no-op on
+    // both of goish's targets: the flag only exists to make 32-bit
+    // userspace opt in to >2 GiB files, and the kernel sets it
+    // implicitly for 64-bit processes. Go passes it because it also
+    // builds for 386 and arm.
+    unsafe {
+        syscall4(
+            SYS_OPENAT,
+            AT_FDCWD as usize,
+            path as usize,
+            flags as usize,
+            mode as usize,
+        ) as i32
+    }
 }
 
 // go: sdk 1.25.5 syscall/syscall_linux.go:285-287 Openat
@@ -711,14 +633,27 @@ pub fn Close(fd: i32) -> i32 {
 // ─── process family (os/exec) ─────────────────────────────────────────
 
 /// `fork(2)` — returns 0 in child, child PID in parent, -errno on
-/// error. Linux x86_64 still ships the legacy `SYS_FORK` (57) which
-/// behaves like a `clone(SIGCHLD, 0)`. Goish uses it directly because
-/// the address-space-sharing variants (vfork, clone with CLONE_VM)
-/// require careful child-side discipline that the simple posix-style
-/// Cmd.Run path doesn't need.
+/// error. Expressed as `clone(SIGCHLD, 0)`, which is precisely what the
+/// legacy `fork` syscall does: a full address-space copy whose child
+/// signals the parent with SIGCHLD on exit, running on the parent's own
+/// (copy-on-write) stack because `newsp` is 0.
+///
+/// Why not the legacy call: arm64 has no `SYS_FORK` at any number, and
+/// Go does not use one either — `syscall/exec_linux.go:340-342` goes
+/// through `rawVforkSyscall(SYS_CLONE, …)` on every Linux architecture,
+/// amd64 included.
+///
+/// The address-space-*sharing* variants (vfork, clone with CLONE_VM) are
+/// still deliberately avoided: they require child-side discipline the
+/// simple posix-style `Cmd.Run` path doesn't need.
 #[allow(non_snake_case)]
 pub fn Fork() -> i32 {
-    unsafe { syscall0(SYS_FORK) as i32 }
+    // clone(flags = SIGCHLD, newsp = 0). The remaining arguments are
+    // unused because no CLONE_PARENT_SETTID / CLONE_SETTLS /
+    // CLONE_CHILD_CLEARTID flag is set — which is also why the amd64 and
+    // arm64 disagreement about the order of slots 4 and 5 (see
+    // `asm_linux_arm64.rs`) cannot bite here.
+    unsafe { syscall2(SYS_CLONE, SIGCHLD as usize, 0) as i32 }
 }
 
 /// `execve(2)` — replace the current process image. `argv` and `envp`
@@ -757,9 +692,6 @@ pub fn Dup3(oldfd: i32, newfd: i32, flags: i32) -> i32 {
 
 // ─── stat / fstat (Linux x86_64 layout) ──────────────────────────────
 
-pub const SYS_FSTAT: usize = 5;
-pub const SYS_NEWFSTATAT: usize = 262;
-pub const SYS_LSEEK: usize = 8;
 
 /// File mode bits (from <sys/stat.h>). Used by `Stat_t.st_mode`.
 pub const S_IFMT: u32 = 0o170000;
@@ -845,6 +777,11 @@ pub fn __openat_raw(dirfd: i32, path: *const u8, flags: i32, mode: i32) -> i32 {
 /// `fstatat(AT_FDCWD, path, &stat, 0)` — stat a path relative to CWD,
 /// following symlinks. `path` must be NUL-terminated.
 pub const AT_FDCWD: i32 = -100;
+
+/// `AT_REMOVEDIR` — make `unlinkat` behave as `rmdir` rather than
+/// `unlink`. The only way to remove a directory on an architecture
+/// with no `rmdir` syscall.
+pub const AT_REMOVEDIR: i32 = 0x200;
 
 /// `AT_SYMLINK_NOFOLLOW` — don't traverse a final-component symlink.
 /// Used by Lstat (fstatat with this flag).
@@ -942,47 +879,14 @@ pub const LOCK_NB: i32 = 4;
 
 // ─── mkdir / unlink / rmdir / chmod / symlink / readlink ────────────
 
-pub const SYS_MKDIR: usize = 83;
-pub const SYS_UNLINK: usize = 87;
-pub const SYS_MKDIRAT: usize = 258;
-pub const SYS_UNLINKAT: usize = 263;
-pub const SYS_FCHOWNAT: usize = 260;
-pub const SYS_FCHDIR: usize = 81;
-pub const SYS_FCHOWN: usize = 93;
-pub const SYS_RENAMEAT: usize = 264;
-pub const SYS_LINKAT: usize = 265;
-pub const SYS_SYMLINKAT: usize = 266;
-pub const SYS_FCHMODAT: usize = 268;
-
-/// `AT_REMOVEDIR` — make `unlinkat` behave as rmdir(2) instead of
-/// unlink(2). One flag is the whole difference between the two, which
-/// is why `os.Root.Remove` can try a file and fall back to a
-/// directory without a stat in between.
-pub const AT_REMOVEDIR: i32 = 0x200;
-pub const SYS_RMDIR: usize = 84;
-pub const SYS_CHMOD: usize = 90;
-pub const SYS_FCHMOD: usize = 91;
-pub const SYS_MKNOD: usize = 133;
-pub const SYS_SYMLINK: usize = 88;
-pub const SYS_READLINK: usize = 89;
-pub const SYS_READLINKAT: usize = 267;
-pub const SYS_RENAME: usize = 82;
-pub const SYS_LINK: usize = 86;
-pub const SYS_TRUNCATE: usize = 76;
-pub const SYS_FTRUNCATE: usize = 77;
-pub const SYS_PREAD64: usize = 17;
-pub const SYS_PWRITE64: usize = 18;
-pub const SYS_UTIMENSAT: usize = 280;
-pub const SYS_FLOCK: usize = 73;
-pub const SYS_PIPE2: usize = 293;
-pub const SYS_CHOWN: usize = 92;
-pub const SYS_LCHOWN: usize = 94;
-pub const SYS_UMASK: usize = 95;
 
 /// `mkdir(path, mode)`. Returns 0 on success, -errno on failure.
 #[allow(non_snake_case)]
 pub fn Mkdir(path: *const u8, mode: u32) -> i32 {
-    unsafe { syscall2(SYS_MKDIR, path as usize, mode as usize) as i32 }
+    // Go: `syscall/syscall_linux.go:279-281` routes every Linux arch
+    // through the `*at` form with `AT_FDCWD`; arm64 has no legacy call
+    // to route to. See `zsysnum_linux_arm64.rs`.
+    unsafe { syscall3(SYS_MKDIRAT, AT_FDCWD as usize, path as usize, mode as usize) as i32 }
 }
 
 // go: none — goish-only: the `at` form, taking a NUL-terminated
@@ -1153,13 +1057,27 @@ pub fn Fchownat(dirfd: i32, path: *const u8, uid: u32, gid: u32, flags: i32) -> 
 /// `unlink(path)`. Returns 0 on success, -errno on failure.
 #[allow(non_snake_case)]
 pub fn Unlink(path: *const u8) -> i32 {
-    unsafe { syscall1(SYS_UNLINK, path as usize) as i32 }
+    // Go: `syscall/syscall_linux.go:279-281` routes every Linux arch
+    // through the `*at` form with `AT_FDCWD`; arm64 has no legacy call
+    // to route to. See `zsysnum_linux_arm64.rs`.
+    unsafe { syscall3(SYS_UNLINKAT, AT_FDCWD as usize, path as usize, 0) as i32 }
 }
 
 /// `rmdir(path)`. Returns 0 on success, -errno on failure.
 #[allow(non_snake_case)]
 pub fn Rmdir(path: *const u8) -> i32 {
-    unsafe { syscall1(SYS_RMDIR, path as usize) as i32 }
+    // Go: `syscall/syscall_linux.go:279-281` routes every Linux arch
+    // through the `*at` form with `AT_FDCWD`; arm64 has no legacy call
+    // to route to. See `zsysnum_linux_arm64.rs`.
+    // `AT_REMOVEDIR` is what makes `unlinkat` act as `rmdir`.
+    unsafe {
+        syscall3(
+            SYS_UNLINKAT,
+            AT_FDCWD as usize,
+            path as usize,
+            AT_REMOVEDIR as usize,
+        ) as i32
+    }
 }
 
 /// `getcwd(buf, size)`. Linux returns the length of the cwd string
@@ -1178,7 +1096,10 @@ pub fn Chdir(path: *const u8) -> i32 {
 /// `chmod(path, mode)`. Returns 0 on success, -errno on failure.
 #[allow(non_snake_case)]
 pub fn Chmod(path: *const u8, mode: u32) -> i32 {
-    unsafe { syscall2(SYS_CHMOD, path as usize, mode as usize) as i32 }
+    // Go: `syscall/syscall_linux.go:279-281` routes every Linux arch
+    // through the `*at` form with `AT_FDCWD`; arm64 has no legacy call
+    // to route to. See `zsysnum_linux_arm64.rs`.
+    unsafe { syscall4(SYS_FCHMODAT, AT_FDCWD as usize, path as usize, mode as usize, 0) as i32 }
 }
 
 // go: sdk 1.25.5 syscall/zsyscall_linux_amd64.go:914-918 Umask
@@ -1197,7 +1118,12 @@ pub fn Fchmod(fd: i32, mode: u32) -> i32 {
 /// `symlink(oldname, newname)`. Returns 0 on success, -errno on failure.
 #[allow(non_snake_case)]
 pub fn Symlink(oldname: *const u8, newname: *const u8) -> i32 {
-    unsafe { syscall2(SYS_SYMLINK, oldname as usize, newname as usize) as i32 }
+    // Go: `syscall/syscall_linux.go:279-281` routes every Linux arch
+    // through the `*at` form with `AT_FDCWD`; arm64 has no legacy call
+    // to route to. See `zsysnum_linux_arm64.rs`.
+    unsafe {
+        syscall3(SYS_SYMLINKAT, oldname as usize, AT_FDCWD as usize, newname as usize) as i32
+    }
 }
 
 /// File-type bits for `mknod(2)`'s mode argument (`<sys/stat.h>`).
@@ -1212,7 +1138,10 @@ pub const S_IFSOCK: i32 = 0o140000;
 /// Returns 0 or a negative errno.
 #[allow(non_snake_case)]
 pub fn Mknod(path: *const u8, mode: i32, dev: u64) -> i32 {
-    let rc = unsafe { syscall3(SYS_MKNOD, path as usize, mode as usize, dev as usize) };
+    // `mknodat(AT_FDCWD, …)`, as Go spells it — arm64 has no `mknod`.
+    let rc = unsafe {
+        syscall4(SYS_MKNODAT, AT_FDCWD as usize, path as usize, mode as usize, dev as usize)
+    };
     return rc as i32; // goishlint:ignore GOISH005 - a raw kernel return code, not a Go value.
 }
 
@@ -1220,7 +1149,12 @@ pub fn Mknod(path: *const u8, mode: i32, dev: u64) -> i32 {
 /// buf (without NUL) on success, or a negative errno on failure.
 #[allow(non_snake_case)]
 pub fn Readlink(path: *const u8, buf: *mut u8, bufsiz: usize) -> isize {
-    unsafe { syscall3(SYS_READLINK, path as usize, buf as usize, bufsiz) as isize }
+    // Go: `syscall/syscall_linux.go:279-281` routes every Linux arch
+    // through the `*at` form with `AT_FDCWD`; arm64 has no legacy call
+    // to route to. See `zsysnum_linux_arm64.rs`.
+    unsafe {
+        syscall4(SYS_READLINKAT, AT_FDCWD as usize, path as usize, buf as usize, bufsiz) as isize
+    }
 }
 
 // go: none — goish-only: Go's `unix.Readlinkat` takes a Go string and
@@ -1264,14 +1198,40 @@ pub fn Utimensat(dirfd: i32, path: *const u8, times: *const Timespec, flags: i32
 /// `rename(oldpath, newpath)`. Returns 0 on success, -errno on failure.
 #[allow(non_snake_case)]
 pub fn Rename(oldpath: *const u8, newpath: *const u8) -> i32 {
-    unsafe { syscall2(SYS_RENAME, oldpath as usize, newpath as usize) as i32 }
+    // Go: `syscall/syscall_linux.go:279-281` routes every Linux arch
+    // through the `*at` form with `AT_FDCWD`; arm64 has no legacy call
+    // to route to. See `zsysnum_linux_arm64.rs`.
+    unsafe {
+        syscall4(
+            SYS_RENAMEAT,
+            AT_FDCWD as usize,
+            oldpath as usize,
+            AT_FDCWD as usize,
+            newpath as usize,
+        ) as i32
+    }
 }
 
 /// `link(oldpath, newpath)` — create newpath as a hard link to oldpath.
 /// Returns 0 on success, -errno on failure.
 #[allow(non_snake_case)]
 pub fn Link(oldpath: *const u8, newpath: *const u8) -> i32 {
-    unsafe { syscall2(SYS_LINK, oldpath as usize, newpath as usize) as i32 }
+    // Go: `syscall/syscall_linux.go:279-281` routes every Linux arch
+    // through the `*at` form with `AT_FDCWD`; arm64 has no legacy call
+    // to route to. See `zsysnum_linux_arm64.rs`.
+    // The trailing 0 is `flags`; `AT_SYMLINK_FOLLOW` is not set, matching
+    // `link(2)`'s behaviour of not following a symlinked oldpath.
+    unsafe {
+        syscall6(
+            SYS_LINKAT,
+            AT_FDCWD as usize,
+            oldpath as usize,
+            AT_FDCWD as usize,
+            newpath as usize,
+            0,
+            0,
+        ) as i32
+    }
 }
 
 /// `truncate(path, length)`. Returns 0 on success, -errno on failure.
@@ -1292,19 +1252,46 @@ pub fn Pipe2(pipefd: &mut [i32; 2], flags: i32) -> i32 {
 /// unchanged. Returns 0 on success or -errno on failure.
 #[allow(non_snake_case)]
 pub fn Chown(path: *const u8, uid: i32, gid: i32) -> i32 {
-    unsafe { syscall3(SYS_CHOWN, path as usize, uid as usize, gid as usize) as i32 }
+    // Go: `syscall/syscall_linux.go:279-281` routes every Linux arch
+    // through the `*at` form with `AT_FDCWD`; arm64 has no legacy call
+    // to route to. See `zsysnum_linux_arm64.rs`.
+    unsafe {
+        syscall6(
+            SYS_FCHOWNAT,
+            AT_FDCWD as usize,
+            path as usize,
+            uid as usize,
+            gid as usize,
+            0,
+            0,
+        ) as i32
+    }
 }
 
 /// `lchown(path, uid, gid)` — like chown, but does not follow a
 /// final-component symlink. Returns 0 on success or -errno.
 #[allow(non_snake_case)]
 pub fn Lchown(path: *const u8, uid: i32, gid: i32) -> i32 {
-    unsafe { syscall3(SYS_LCHOWN, path as usize, uid as usize, gid as usize) as i32 }
+    // Go: `syscall/syscall_linux.go:279-281` routes every Linux arch
+    // through the `*at` form with `AT_FDCWD`; arm64 has no legacy call
+    // to route to. See `zsysnum_linux_arm64.rs`.
+    // `AT_SYMLINK_NOFOLLOW` is exactly what distinguishes `lchown` from
+    // `chown`.
+    unsafe {
+        syscall6(
+            SYS_FCHOWNAT,
+            AT_FDCWD as usize,
+            path as usize,
+            uid as usize,
+            gid as usize,
+            AT_SYMLINK_NOFOLLOW as usize,
+            0,
+        ) as i32
+    }
 }
 
 // ─── uname ───────────────────────────────────────────────────────────
 
-pub const SYS_UNAME: usize = 63;
 
 /// Linux `struct utsname`. Each field is a NUL-padded byte array of
 /// fixed length (65 on Linux). `sysname` / `nodename` / `release` /
@@ -1340,7 +1327,6 @@ pub fn Uname(buf: &mut Utsname) -> i32 {
 
 // ─── getrandom ───────────────────────────────────────────────────────
 
-pub const SYS_GETRANDOM: usize = 318;
 pub const GRND_NONBLOCK: u32 = 0x0001;
 pub const GRND_RANDOM: u32 = 0x0002;
 pub const GRND_INSECURE: u32 = 0x0004;
@@ -1355,7 +1341,6 @@ pub fn Getrandom(buf: *mut u8, buflen: usize, flags: u32) -> i64 {
 
 // ─── getdents64 ──────────────────────────────────────────────────────
 
-pub const SYS_GETDENTS64: usize = 217;
 
 /// Linux `struct linux_dirent64` (getdents64(2)). Variable-sized
 /// `d_name` field is *not* part of this struct; callers parse it
@@ -1481,36 +1466,6 @@ pub fn Nanosleep(req: *const Timespec, rem: *mut Timespec) -> isize {
     unsafe { syscall2(SYS_NANOSLEEP, req as usize, rem as usize) }
 }
 
-/// 0-argument syscall — used by `fork(2)` and `getpid(2)`.
-#[inline]
-pub unsafe fn syscall0(n: usize) -> isize {
-    let ret: isize;
-    asm!(
-        "syscall",
-        inlateout("rax") n => ret,
-        out("rcx") _,
-        out("r11") _,
-        options(nostack, preserves_flags),
-    );
-    ret
-}
-
-/// 2-argument syscall — used by `clock_gettime` / `nanosleep`.
-#[inline]
-pub unsafe fn syscall2(n: usize, a1: usize, a2: usize) -> isize {
-    let ret: isize;
-    asm!(
-        "syscall",
-        inlateout("rax") n => ret,
-        in("rdi") a1,
-        in("rsi") a2,
-        out("rcx") _,
-        out("r11") _,
-        options(nostack, preserves_flags),
-    );
-    ret
-}
-
 /// `gettid(2)` — kernel thread id. Linux makes each clone(2)'d thread
 /// have its own tid (vs the shared tgid). Used as the M's identity
 /// (`m.procid`) in M17a-β.
@@ -1525,12 +1480,6 @@ pub fn Getpid() -> i32 {
     unsafe { syscall1(SYS_GETPID, 0) as i32 }
 }
 
-pub const SYS_GETUID: usize = 102;
-pub const SYS_GETGID: usize = 104;
-pub const SYS_GETEUID: usize = 107;
-pub const SYS_GETEGID: usize = 108;
-pub const SYS_GETPPID: usize = 110;
-pub const SYS_GETGROUPS: usize = 115;
 
 /// `getuid(2)` — real user id of the calling process.
 #[allow(non_snake_case)]
@@ -1655,26 +1604,6 @@ pub unsafe fn Sigaltstack(new: *const SigaltstackT, old: *mut SigaltstackT) -> i
     syscall2(SYS_SIGALTSTACK, new as usize, old as usize)
 }
 
-/// Sigreturn trampoline. The kernel jumps here when a signal
-/// handler returns; this issues `rt_sigreturn(2)` which restores
-/// the pre-signal context. Mandatory on amd64 (kernel has no
-/// default stub since glibc dropped libgcc-style restorers).
-///
-/// Naked asm: just two instructions, no prologue/epilogue.
-/// Mirrors Go runtime `sigreturn__sigaction`
-/// (sys_linux_amd64.s:470).
-#[unsafe(naked)]
-#[allow(non_snake_case)]
-pub unsafe extern "C" fn SigreturnTrampoline() {
-    core::arch::naked_asm!(
-        "movq $15, %rax", // SYS_rt_sigreturn
-        "syscall",
-        // Should never return; if it does, INT3.
-        "int3",
-        options(att_syntax),
-    )
-}
-
 /// `sched_yield(2)` — voluntary yield to other runnable threads.
 /// Used by idle Ms after a bounded spin when their run queue is
 /// empty (M17a-γ). M17c will replace this with a futex wait.
@@ -1738,6 +1667,13 @@ pub fn SchedGetaffinity(pid: i32, cpusetsize: usize, mask: *mut u8) -> isize {
 /// stored at that address (the M's address in goish's TLS layout).
 ///
 /// Returns 0 on success, `-errno` on failure.
+///
+/// **amd64 only.** arm64 has no `arch_prctl` syscall at all — the thread
+/// pointer lives in `TPIDR_EL0`, which is writable at EL0, so the same
+/// operation is one `msr` and no kernel entry. Callers go through
+/// `runtime::sched::tls::{base, set_base}` rather than calling this
+/// directly, which is what keeps the difference from leaking.
+#[cfg(target_arch = "x86_64")]
 #[allow(non_snake_case)]
 pub fn ArchPrctl(code: i32, addr: usize) -> isize {
     unsafe { syscall2(SYS_ARCH_PRCTL, code as usize, addr) }
@@ -1752,135 +1688,6 @@ pub fn ExitThread(code: i32) -> ! {
         syscall1(SYS_EXIT, code as usize);
         core::hint::unreachable_unchecked()
     }
-}
-
-/// `clone(2)` — spawn a new OS thread sharing the parent's address
-/// space. The child begins execution at `child_entry` on a fresh
-/// stack pointed at by `child_stack` (which must point at the **top**
-/// of an mmap'd region of at least 64 KiB). `child_entry` must be
-/// `extern "C"` and never return; it should call `ExitThread` when
-/// done.
-///
-/// `tls`: Goish's per-M TLS base. In the default configuration, if
-/// nonzero, the kernel sets the child's `fs` segment base to this
-/// address (`CLONE_SETTLS` is OR'd into flags by the trampoline).
-/// With `ffi-system-tls`, the child inherits the platform `fs` base and
-/// the trampoline installs this address in `gs` using `arch_prctl`
-/// before entering Rust. Pass 0 to inherit both segment bases.
-///
-/// Returns the child TID on the parent path. Never returns directly
-/// in the child — the child immediately tail-jumps to `child_entry`.
-///
-/// **ABI** (matches Go runtime/sys_linux_amd64.s:561-619):
-///   rdi = flags (typically `CLONE_THREAD_FLAGS`)
-///   rsi = child_stack (top — kernel decrements as child uses)
-///   rdx = child_entry (saved on the new stack before the syscall
-///                       so we can jmp to it after the syscall
-///                       clobbers our scratch regs)
-///   rcx = tls (4th SysV arg; trampoline moves to r8 = clone's newtls)
-///
-/// **Safety**: caller must keep `child_stack` and (if `tls != 0`) the
-/// memory it points at alive for the lifetime of the child thread;
-/// passing stale pointers will SIGSEGV the child.
-#[allow(non_snake_case)]
-#[unsafe(naked)]
-#[cfg(not(feature = "ffi-system-tls"))]
-pub unsafe extern "C" fn Clone(
-    _flags: u64,
-    _child_stack: *mut u8,
-    _child_entry: extern "C" fn() -> !,
-    _tls: u64,
-) -> i64 {
-    core::arch::naked_asm!(
-        // SysV register-passed args at function entry:
-        //   rdi = flags, rsi = child_stack, rdx = child_entry, rcx = tls
-        //
-        // Step 1: stash child_entry on the new stack (so we can
-        // recover it after rdx is clobbered for ptid).
-        "subq $8, %rsi",
-        "movq %rdx, (%rsi)",
-        // Step 2: move tls (rcx, our 4th SysV arg) → r8 (clone's
-        // newtls register). rcx will be clobbered by the syscall
-        // anyway; we don't need it again.
-        "movq %rcx, %r8",
-        // Step 3: if tls != 0, OR CLONE_SETTLS (0x80000) into flags
-        // so the kernel sets the child's fs base from r8.
-        "testq %r8, %r8",
-        "jz 3f",
-        "orq $0x80000, %rdi",
-        "3:",
-        // Step 4: clone(2) syscall.
-        "movq $56, %rax",  // SYS_clone
-        "xorq %rdx, %rdx", // ptid = 0
-        "xorq %r10, %r10", // ctid = 0
-        "syscall",
-        // Both threads continue here. Parent: rax > 0; child: rax = 0
-        // and rsp = child_stack-8 (kernel set rsp from rsi).
-        "testq %rax, %rax",
-        "jnz 2f",
-        // CHILD: load child_entry off the stack (without popping —
-        // we want rsp at stack_top-8 when entry runs, so that
-        // rsp+8 is 16-aligned, matching SysV's "after-CALL"
-        // convention. Go's clone trampoline does this implicitly
-        // by using `CALL R12` instead of JMP. fs is already set by
-        // CLONE_SETTLS, so the entry function can call
-        // current_m() immediately.
-        "movq (%rsp), %rax",
-        "jmpq *%rax",
-        // PARENT: rax holds child_pid; just return.
-        "2:",
-        "retq",
-        options(att_syntax),
-    )
-}
-
-/// `clone(2)` trampoline for `ffi-system-tls` builds.
-///
-/// Linux's `CLONE_SETTLS` argument configures FS on x86-64, so it
-/// cannot install Goish's GS-based runtime slot. This variant leaves FS
-/// inherited, then performs the raw `arch_prctl(ARCH_SET_GS, tls)`
-/// syscall in the child before tail-jumping to any Rust code.
-#[allow(non_snake_case)]
-#[unsafe(naked)]
-#[cfg(feature = "ffi-system-tls")]
-pub unsafe extern "C" fn Clone(
-    _flags: u64,
-    _child_stack: *mut u8,
-    _child_entry: extern "C" fn() -> !,
-    _tls: u64,
-) -> i64 {
-    core::arch::naked_asm!(
-        "subq $16, %rsi",
-        "movq %rdx, 0(%rsi)",
-        "movq %rcx, 8(%rsi)",
-        "andq $-524289, %rdi", // !CLONE_SETTLS (0x80000)
-        "movq $56, %rax",      // SYS_clone
-        "xorq %rdx, %rdx",     // ptid = 0
-        "xorq %r10, %r10",     // ctid = 0
-        "xorq %r8, %r8",       // newtls unused without CLONE_SETTLS
-        "syscall",
-        "testq %rax, %rax",
-        "jnz 2f",
-        "movq 8(%rsp), %rsi",
-        "testq %rsi, %rsi",
-        "jz 3f",
-        "movq $158, %rax",    // SYS_arch_prctl
-        "movq $0x1001, %rdi", // ARCH_SET_GS
-        "syscall",
-        "testq %rax, %rax",
-        "jz 3f",
-        "movq $60, %rax", // SYS_exit (this thread only)
-        "movq $2, %rdi",
-        "syscall",
-        "ud2",
-        "3:",
-        "movq 0(%rsp), %rax",
-        "addq $8, %rsp",
-        "jmpq *%rax",
-        "2:",
-        "retq",
-        options(att_syntax),
-    )
 }
 
 // ─── BSD/POSIX sockets — M27a ─────────────────────────────────────────
@@ -2381,14 +2188,6 @@ pub fn EpollPwait(
 // Wrappers follow the x/sys signatures (Go-shaped, string paths,
 // (value, error) returns); the raw -errno forms stay private.
 
-pub const SYS_POLL: usize = 7;
-pub const SYS_INOTIFY_ADD_WATCH: usize = 254;
-pub const SYS_INOTIFY_RM_WATCH: usize = 255;
-pub const SYS_STATFS: usize = 137;
-pub const SYS_INOTIFY_INIT1: usize = 294;
-pub const SYS_FANOTIFY_INIT: usize = 300;
-pub const SYS_FANOTIFY_MARK: usize = 301;
-pub const SYS_NAME_TO_HANDLE_AT: usize = 303;
 
 // inotify flags (zerrors_linux_amd64.go).
 pub const IN_CLOEXEC: i32 = 0x80000;
@@ -2697,12 +2496,30 @@ pub struct PollFd {
 /// `timeout` in milliseconds, negative = infinite. Returns the
 /// number of ready fds.
 pub fn Poll(fds: &mut [PollFd], timeout: crate::int) -> (crate::int, crate::error) {
+    // `ppoll` rather than `poll`: arm64 has no `poll` syscall. The
+    // timeout changes shape with it — milliseconds as an `int` become a
+    // `Timespec`, and "infinite" becomes a NULL pointer rather than a
+    // negative number.
+    let ts = Timespec {
+        tv_sec: (timeout as i64) / 1000,
+        tv_nsec: ((timeout as i64) % 1000) * 1_000_000,
+    };
+    let tsp = if timeout < 0 {
+        core::ptr::null()
+    } else {
+        &ts as *const Timespec
+    };
     let rc = unsafe {
-        syscall3(
-            SYS_POLL,
+        syscall4(
+            SYS_PPOLL,
             fds.as_mut_ptr() as usize,
             fds.len(),
-            timeout as usize,
+            tsp as usize,
+            // sigmask = NULL, so ppoll's signal-mask swap is a no-op and
+            // the call is behaviourally identical to poll(2). The 5th
+            // argument (sigsetsize) is only read when sigmask is
+            // non-NULL, so a 4-argument call is well-formed here.
+            0,
         )
     };
     if rc < 0 {
