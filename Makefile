@@ -20,8 +20,58 @@ EXAMPLES_DIR := target/$(TARGET)/$(PROFILE)/examples
 
 SCOPE     ?= src
 
+ARM64_TARGET    ?= aarch64-unknown-linux-gnu
+ARM64_ALLOWLIST ?= scripts/linux_arm64_examples.txt
+
+# `cargo` on PATH is not necessarily the rustup shim, and only the rustup
+# toolchain has the cross targets. A Homebrew rust installs to
+# /opt/homebrew/bin, comes first on PATH, and ships ONLY the host std —
+# so `cargo build --target <anything else>` fails with
+#
+#     error[E0463]: can't find crate for `core`
+#     note: the <target> target may not be installed
+#
+# even though `rustup target list --installed` shows the target present.
+# Both are the same rustc version, so `rustc -vV` cannot tell them apart;
+# only `which -a cargo` can. Resolve through rustup for cross builds and
+# leave $(CARGO) alone for the native path.
+#
+# RUSTC has to be set too, and that is the non-obvious half: `rustup
+# which cargo` returns the real binary inside the toolchain, not the
+# ~/.cargo/bin shim, and that binary still looks up `rustc` on PATH — so
+# a rustup cargo happily drives a Homebrew rustc straight back into the
+# same error. Pinning both is what makes this work from a bare `make`.
+CARGO_CROSS ?= $(shell rustup which cargo 2>/dev/null || echo $(CARGO))
+
+# Everything below is a no-op on a Linux host: $(CARGO) and the system cc
+# already do the right thing, CROSS_ENV and *_LINKER stay empty, and the
+# recipes expand exactly as they do in CI. Only a non-Linux development
+# host needs any of it.
+ifeq ($(shell uname -s),Darwin)
+
+# RUSTC has to be pinned too, and that is the non-obvious half: `rustup
+# which cargo` returns the real binary inside the toolchain, not the
+# ~/.cargo/bin shim, and that binary still looks up `rustc` on PATH — so
+# a rustup cargo happily drives a Homebrew rustc straight back into the
+# same error. Pinning both is what makes this work from a bare `make`.
+RUSTC_CROSS ?= $(shell rustup which rustc 2>/dev/null)
+ifneq ($(RUSTC_CROSS),)
+CROSS_ENV := RUSTC=$(RUSTC_CROSS)
+endif
+
+# The linker has to be told how to emit ELF; see scripts/cross_lld.py.
+# Note this applies to the DEFAULT target too — `.cargo/config.toml` pins
+# `[build] target = x86_64-unknown-linux-gnu`, so even a bare `make build`
+# on a Mac is a cross build.
+ARM64_LINKER := CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=$(CURDIR)/scripts/cross_lld.py \
+                GOISH_CROSS_TARGET=$(ARM64_TARGET)
+HOST_LINKER  := CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=$(CURDIR)/scripts/cross_lld.py
+
+endif
+
 .PHONY: all build e2e e2e-full e2e-build e2e-quick e2e-clean clean help \
-        lint lint-new lint-update anchors manifests ifaces split-brain
+        lint lint-new lint-update anchors manifests ifaces split-brain \
+        build-arm64 run-arm64
 
 help:
 	@echo "goish-v1 make targets:"
@@ -40,6 +90,9 @@ help:
 	@echo "                ported file is expected to be clean"
 	@echo "  lint-update   re-record the baseline after fixing findings"
 	@echo "  clean         cargo clean"
+	@echo "  build-arm64   build the aarch64-unknown-linux-gnu allowlist"
+	@echo "                (scripts/linux_arm64_examples.txt)"
+	@echo "  run-arm64     build-arm64 + run each entry under linux/arm64"
 	@echo
 	@echo "Knobs (env or make var):"
 	@echo "  LOOPS=N       force uniform iterations per example (disables tiers)"
@@ -58,14 +111,53 @@ help:
 	@echo "  make e2e LOOPS=10 TIMEOUT=30 FILTER='^http_'"
 
 build:
-	$(CARGO) build --examples
+	$(CROSS_ENV) $(HOST_LINKER) $(if $(CROSS_ENV),$(CARGO_CROSS),$(CARGO)) build --examples
+
+# ─── aarch64-unknown-linux-gnu ────────────────────────────────────────
+#
+# Allowlist-driven, never `--examples`: each debug example is a ~47 MiB
+# static ELF and there are ~595 of them. The list is the acceptance
+# artifact — a milestone lands when its examples are in it and green.
+ARM64_EXAMPLES := $(shell grep -v '^\#' $(ARM64_ALLOWLIST) | grep -v '^$$')
+
+# Fails early and legibly rather than 200 lines into a cargo error.
+.PHONY: arm64-preflight
+arm64-preflight:
+	@rustup target list --installed 2>/dev/null | grep -qx '$(ARM64_TARGET)' || { \
+		echo "goish: the $(ARM64_TARGET) std is not installed."; \
+		echo "       run: rustup target add $(ARM64_TARGET)"; \
+		exit 1; }
+	@command -v $(CARGO_CROSS) >/dev/null || { \
+		echo "goish: no cargo with cross targets found (looked for $(CARGO_CROSS))."; \
+		echo "       install rustup, or set CARGO_CROSS=/path/to/cargo"; \
+		exit 1; }
+
+build-arm64: arm64-preflight
+	$(CROSS_ENV) $(ARM64_LINKER) $(CARGO_CROSS) build --target $(ARM64_TARGET) \
+		$(foreach e,$(ARM64_EXAMPLES),--example $(e))
+
+# Run the allowlist. On an Apple Silicon host `docker run --platform
+# linux/arm64` is NATIVE execution, not emulation, so this is a real
+# gate rather than a smoke test — the one place a weak-memory bug can
+# actually show up before the arm64 CI job exists.
+run-arm64: build-arm64
+	@command -v docker >/dev/null || { \
+		echo "goish: run-arm64 needs docker to provide a linux/arm64 userland."; \
+		echo "       on an Apple Silicon host that is NATIVE execution, not emulation."; \
+		exit 1; }
+	@for e in $(ARM64_EXAMPLES); do \
+		printf '%-40s' "$$e"; \
+		docker run --rm --platform linux/arm64 \
+			-v "$$PWD:/w" -w /w/target/$(ARM64_TARGET)/$(PROFILE)/examples \
+			debian:bookworm-slim "./$$e" && echo "  [ok]" || echo "  [FAIL]"; \
+	done
 
 # FILTER already chooses which examples the runner executes. Apply the same
 # selection before compilation so focused package checks do not build hundreds
 # of unrelated static binaries. With no FILTER, the full build is unchanged.
 e2e-build:
 	@bash scripts/e2e_build_test.sh
-	@FILTER='$(FILTER)' bash scripts/e2e_build.sh $(CARGO)
+	@FILTER='$(FILTER)' $(CROSS_ENV) $(HOST_LINKER) bash scripts/e2e_build.sh $(if $(CROSS_ENV),$(CARGO_CROSS),$(CARGO))
 
 e2e: e2e-build
 	@$(if $(LOOPS),LOOPS=$(LOOPS),) \
