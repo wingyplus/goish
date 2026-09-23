@@ -22,27 +22,25 @@ concurrency:
 
 jobs:
   e2e:
-    # Explicit per-entry names keep the pre-matrix check names (`e2e`,
-    # `e2e-macos`), so nothing keyed on them has to change.
-    name: ${{ matrix.check }}
+    # One job over both platforms: `e2e (ubuntu-latest)` and
+    # `e2e (macos-latest)`.
+    name: e2e (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       # One platform failing must not cancel the other's signal.
       fail-fast: false
       matrix:
         include:
-          - check: e2e
-            os: ubuntu-latest
+          - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          # darwin/arm64 — the port's allowlist
-          # (scripts/darwin_arm64_examples.txt), natively on an Apple
-          # Silicon runner. Not every example: most still stop at a
-          # milestone the port has not reached, each with an abort that
-          # names it. The allowlist only grows.
-          - check: e2e-macos
-            os: macos-latest
+            timeout: 60
+          # darwin/arm64, natively on an Apple Silicon runner: every
+          # declared example, as on Linux. Longer budget: each Mach-O
+          # debug example also gets a dsymutil pass for its line tables.
+          - os: macos-latest
             target: aarch64-apple-darwin
+            timeout: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -68,9 +66,7 @@ jobs:
       # tiers. CI runners are slower than a dev box, so widen the
       # per-iteration timeout; https_real_smoke already tolerates network
       # flakes via the runner's NETWORK_FLAKY handling.
-      # The same task on both platforms; TARGET picks the example set
-      # (every declared example, or the port's allowlist — see
-      # E2E_ALLOWLIST in the Makefile).
+      # The same task on both platforms; only TARGET differs.
       - name: make e2e LOOPS=1
         run: make e2e TARGET=${{ matrix.target }} LOOPS=1 TIMEOUT=30
 
@@ -78,6 +74,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.check }}-failure-logs
+          name: e2e-${{ matrix.os }}-failure-logs
           path: scripts/.e2e-artifacts
           if-no-files-found: ignore

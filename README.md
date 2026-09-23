@@ -118,11 +118,10 @@ Active development. The e2e suite runs 856 declared examples at tiered loop coun
 |---|---|---|
 | `x86_64-unknown-linux-gnu` | **Complete.** Everything in this README. | `make e2e` — 417 declared examples at tiered loop counts |
 | `aarch64-unknown-linux-gnu` | **Boots.** Entry stub, args, flags, thread pointer, mheap, mcentral, the P array. No scheduler: `gogo` is unwritten, so `main` runs on `g0` and anything that parks a goroutine fatals. | `make run-arm64` — 1 example |
-| `aarch64-apple-darwin` | **Boots, with the allocator up.** 17 examples: hashes, codecs, `bufio`, `sort`, a stream cipher. No threads, no scheduler, no signals, no netpoller — anything reaching `current_m()` exits naming the milestone that will supply it. | `make run-darwin` — 17 examples, native |
+| `aarch64-apple-darwin` | **Runs the suite.** Worker Ms and sysmon on pthreads, the kqueue netpoller, signals, async preemption, package init, `file:line` symbolization from the dSYM, `os/exec`. A few examples that exercise Linux-only kernel interfaces (inotify, fanotify, amd64 signal frames) print SKIP. | `make e2e TARGET=aarch64-apple-darwin` — every declared example, native |
 
-Both new targets are allowlist-driven ratchets (`scripts/linux_arm64_examples.txt`,
-`scripts/darwin_arm64_examples.txt`): a milestone is not done until its examples are in the list
-and green. The port plan is [`plan.md`](plan.md).
+linux/arm64 is an allowlist-driven ratchet (`scripts/linux_arm64_examples.txt`): a milestone
+is not done until its examples are in the list and green. The port plan is [`plan.md`](plan.md).
 
 ### Testing
 
@@ -364,15 +363,15 @@ macOS. libSystem *is* the system-call interface there — which is also what Go 
 dependency, `/usr/lib/libSystem.B.dylib`, and no others.
 
 ```bash
-make run-darwin                                            # macOS arm64, native
+make e2e TARGET=aarch64-apple-darwin                       # macOS arm64, native
 make run-arm64                                             # linux/arm64, via docker
 ```
 
 ### Toolchain
 - Rust 1.79+ (uses inline-const `[const { Span::new() }; N]` and naked asm).
 - Linux x86_64 host for the full suite. Tests run under the host's kernel.
-- The two in-progress targets build from either a Linux or a macOS host; on Apple Silicon,
-  `make run-darwin` is native execution and `make run-arm64` needs docker.
+- On Apple Silicon, `make e2e TARGET=aarch64-apple-darwin` is native execution and
+  `make run-arm64` needs docker.
 
 ### Notable build flags (in `.cargo/config.toml`)
 ```

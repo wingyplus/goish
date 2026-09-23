@@ -31,8 +31,8 @@
 #   TARGET_DIR=...   cargo target dir (default target/x86_64-unknown-linux-gnu/debug)
 #   EXAMPLES_FILE=.. take example names from this allowlist (one per
 #                    line, `#` comments) instead of Cargo.toml's
-#                    declarations — for targets where only a known-good
-#                    subset works yet (scripts/darwin_arm64_examples.txt).
+#                    declarations — for a target where only a known-good
+#                    subset works yet (e.g. scripts/linux_arm64_examples.txt).
 #                    FILTER and EXCLUDE still apply on top.
 #
 # Exit code: 0 if every iteration of every example passes; 1 otherwise.
