@@ -1,7 +1,7 @@
 // runtime::rt0_darwin — the staged boot on macOS/arm64.
 //
 // The Linux `__goish_rt0` in `runtime/mod.rs` runs fifteen steps before
-// it hands off to the user's `main`. This one runs six. It is a
+// it hands off to the user's `main`. This one runs seven. It is a
 // separate function rather than a third `#[cfg]` arm threaded through
 // that one because the difference is not a branch or two — it is which
 // two thirds of the sequence exist at all, and a reader of either file
@@ -14,12 +14,13 @@
 //      argument rather than an ELF stack walk (see `runtime/flags.rs`).
 //   3. `sched::setup_main_tls` — the main M's thread pointer, in a
 //      pthread TSD slot (M4; see `sched/tls/tls_darwin_arm64.rs`).
-//   4. `heap::mheap_init` + `mcentral::mcentral_init` — the allocator.
-//   5. `sched::register_m_storage` + `sched::setup_main_g0` — the main
+//   4. `rand::init` — seed `select`'s fairness PRNG from `cputicks`.
+//   5. `heap::mheap_init` + `mcentral::mcentral_init` — the allocator.
+//   6. `sched::register_m_storage` + `sched::setup_main_g0` — the main
 //      M's `g0`, adopting the OS stack from libpthread's bounds.
-//   6. `__goish_main()`, then `sys::exit(0)`.
+//   7. `__goish_main()`, then `sys::exit(0)`.
 //
-// **Step 4 is more than the port plan budgeted for**, and the reason is
+// **Step 5 is more than the port plan budgeted for**, and the reason is
 // worth recording: the plan was written when `runtime/heap.rs` still
 // had a pre-mheap dlmalloc tier, and scheduled M1 to boot on that and
 // leave mheap for M2. dlmalloc is gone — `PageAlloc`'s metadata moved
@@ -36,8 +37,6 @@
 //
 // Skipped, each with the milestone that turns it on:
 //
-//   `rand::init`          M3 — seeds from `cputicks`, which is real,
-//                              but is only wanted once `select` runs.
 //   `bootstrap_ps`        M5
 //   `bootstrap_workers`   M5 — `pthread_create` workers, which have
 //                              nothing to run until `gogo` exists.
@@ -64,7 +63,7 @@
 //
 // M5 deletes the direct call; M6 deletes most of the list above.
 
-use crate::runtime::{args, flags, heap, mcentral, sched};
+use crate::runtime::{args, flags, heap, mcentral, rand, sched};
 use crate::sys;
 
 /// First Rust code to run after dyld calls `main`.
@@ -96,6 +95,10 @@ pub extern "C" fn __goish_rt0(
     // position as on Linux — before the allocator, because nothing in
     // it may take a SpinLock across the `TLS_READY` flip.
     sched::setup_main_tls();
+
+    // Seed the cheaprand state so each run starts with a different
+    // `select` fairness sequence. Same position as on Linux.
+    rand::init();
 
     // Bring the allocator online. Both steps mmap directly and neither
     // routes through `#[global_allocator]`, so there is no bootstrap

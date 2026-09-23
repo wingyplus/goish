@@ -321,3 +321,46 @@ impl Default for Statfs_t {
 pub struct RawConn {
     pub(super) fd: i32,
 }
+
+/// `struct sockaddr_un` — 106 bytes, BSD-shaped: a length byte, a `u8`
+/// family, then a **104**-byte path (Linux: `u16` family, 108 bytes).
+/// Measured against the SDK. Same constructor surface as the Linux
+/// type so `net` builds an AF_UNIX address portably.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SockaddrUn {
+    pub sun_len: u8,
+    pub sun_family: u8,
+    pub sun_path: [u8; 104],
+}
+
+impl SockaddrUn {
+    /// An AF_UNIX address for `path`, or None when it does not fit in
+    /// `sun_path` with room for the NUL.
+    pub fn __for_path(path: &[u8]) -> Option<SockaddrUn> {
+        if path.is_empty() || path.len() >= 104 {
+            return None;
+        }
+        let mut sa = SockaddrUn { sun_len: 0, sun_family: super::AF_UNIX as u8, sun_path: [0u8; 104] };
+        sa.sun_path[..path.len()].copy_from_slice(path);
+        sa.sun_len = sa.__len() as u8;
+        Some(sa)
+    }
+
+    /// Length to pass to bind/connect: the two header bytes, the path
+    /// and its NUL — the same arithmetic as Linux's two-byte family.
+    pub fn __len(&self) -> u32 {
+        let n = self.sun_path.iter().position(|&b| b == 0).unwrap_or(self.sun_path.len());
+        (2 + n + 1) as u32
+    }
+}
+
+/// `struct itimerval` — 32 bytes, as on Linux. Darwin's `timeval` has a
+/// 32-bit `tv_usec` at offset 8 followed by padding; the shared
+/// `Timeval` writes it as the low half of an `i64`, which is the same
+/// bytes on this little-endian target for any microsecond count.
+#[repr(C)]
+pub struct Itimerval {
+    pub it_interval: crate::os::exec_posix::Timeval,
+    pub it_value: crate::os::exec_posix::Timeval,
+}

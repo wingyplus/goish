@@ -97,6 +97,28 @@ extern "C" {
     fn pthread_threadid_np(thread: usize, id: *mut u64) -> i32;
     fn pthread_get_stackaddr_np(thread: usize) -> *mut u8;
     fn pthread_get_stacksize_np(thread: usize) -> usize;
+
+    // M3 — time, identity, entropy, CPU count.
+    fn clock_gettime(clk: i32, tp: *mut u8) -> i32;
+    fn nanosleep(req: *const u8, rem: *mut u8) -> i32;
+    fn getpid() -> i32;
+    fn kill(pid: i32, sig: i32) -> i32;
+    fn getppid() -> i32;
+    fn getuid() -> u32;
+    fn geteuid() -> u32;
+    fn getgid() -> u32;
+    fn getegid() -> u32;
+    fn getgroups(size: i32, list: *mut u32) -> i32;
+    fn uname(buf: *mut u8) -> i32;
+    fn arc4random_buf(buf: *mut u8, n: usize);
+    fn sysctl(
+        name: *const i32,
+        namelen: u32,
+        oldp: *mut u8,
+        oldlenp: *mut usize,
+        newp: *const u8,
+        newlen: usize,
+    ) -> i32;
 }
 
 /// Read the calling thread's `errno`.
@@ -228,14 +250,18 @@ pub unsafe fn sys_madvise(addr: *mut u8, length: usize, advice: i32) -> isize {
 /// unspecified unit.
 ///
 /// This is what Darwin's monotonic clock is built out of: Go's
-/// `nanotime1` (`runtime/sys_darwin.go:304-320`) calls it and then
-/// scales by the `mach_timebase_info` numerator/denominator to get
-/// nanoseconds — noting that "numer == denom == 1 is common", which is
-/// the case on Apple Silicon.
+/// `nanotime1` (`runtime/sys_darwin.go`) calls it and then scales by
+/// the `mach_timebase_info` numerator/denominator to get nanoseconds,
+/// noting that "numer == denom == 1 is common". **It is not the case
+/// on Apple Silicon**: measured on an M-series host, `numer = 125`,
+/// `denom = 3` — a 24 MHz counter, 41.67 ns per tick. Treating ticks
+/// as nanoseconds would be wrong by a factor of ~42.
 ///
 /// goish's one caller is `runtime::cputicks`, a PRNG seed source, which
-/// wants monotonic bits rather than a unit. The scaling therefore stays
-/// out of this function; M3 adds it where `time.Now` needs it.
+/// wants monotonic bits rather than a unit, so it takes ticks as-is.
+/// Nanoseconds come from `clock_gettime(CLOCK_UPTIME_RAW)` instead —
+/// the same clock with the conversion already applied (see
+/// `runtime::sysmon::monotonic_ns`).
 ///
 /// Not `-errno`-shaped and not fallible — there is no error path.
 #[inline]
@@ -307,4 +333,83 @@ pub unsafe fn sys_pthread_stack(thread: usize) -> (usize, usize) {
         pthread_get_stackaddr_np(thread) as usize,
         pthread_get_stacksize_np(thread),
     )
+}
+
+// ─── time, identity, entropy, CPU count (M3) ───────────────────────────
+
+/// `clock_gettime(2)`. The clock ids are Darwin's, not Linux's — see
+/// `syscall/zerrors_darwin_arm64.rs` — and one of them does not mean
+/// what its name suggests there: Darwin's `CLOCK_MONOTONIC` counts time
+/// asleep. `CLOCK_UPTIME_RAW` is the one that matches Go's `nanotime`.
+#[inline]
+pub unsafe fn sys_clock_gettime(clk: i32, tp: *mut u8) -> isize {
+    let r = clock_gettime(clk, tp);
+    errno_ret(r as isize)
+}
+
+/// `nanosleep(2)`.
+#[inline]
+pub unsafe fn sys_nanosleep(req: *const u8, rem: *mut u8) -> isize {
+    let r = nanosleep(req, rem);
+    errno_ret(r as isize)
+}
+
+/// `getpid`/`getppid` — cannot fail.
+#[inline]
+pub unsafe fn sys_getpid() -> i32 { getpid() }
+#[inline]
+pub unsafe fn sys_getppid() -> i32 { getppid() }
+
+/// `getuid`/`geteuid`/`getgid`/`getegid` — cannot fail. `uid_t` and
+/// `gid_t` are unsigned 32-bit here as on Linux.
+#[inline]
+pub unsafe fn sys_getuid() -> u32 { getuid() }
+#[inline]
+pub unsafe fn sys_geteuid() -> u32 { geteuid() }
+#[inline]
+pub unsafe fn sys_getgid() -> u32 { getgid() }
+#[inline]
+pub unsafe fn sys_getegid() -> u32 { getegid() }
+
+/// `getgroups(2)`. Count on success, `-errno` on failure.
+#[inline]
+pub unsafe fn sys_getgroups(size: i32, list: *mut u32) -> isize {
+    let r = getgroups(size, list);
+    errno_ret(r as isize)
+}
+
+/// `uname(3)` — a libc function here, not a syscall; it fills the
+/// struct from `sysctl`. The layout is `ztypes_darwin_arm64.rs`'s
+/// `Utsname`: five 256-byte fields, no `domainname`.
+#[inline]
+pub unsafe fn sys_uname(buf: *mut u8) -> isize {
+    let r = uname(buf);
+    errno_ret(r as isize)
+}
+
+/// `arc4random_buf(3)` — fill `buf` from the kernel CSPRNG. Cannot fail
+/// and does not block. Go's darwin `readRandom` is this call
+/// (`runtime/os_darwin.go`).
+#[inline]
+pub unsafe fn sys_arc4random_buf(buf: *mut u8, n: usize) {
+    arc4random_buf(buf, n)
+}
+
+/// `sysctl(3)` on a two-level MIB, reading a `u32`. Returns `None` on
+/// failure. Go's darwin `getCPUCount`/`getPageSize` use exactly this
+/// shape (`runtime/os_darwin.go`).
+#[inline]
+pub unsafe fn sys_sysctl_u32(mib0: i32, mib1: i32) -> Option<u32> {
+    let mib = [mib0, mib1];
+    let mut out: u32 = 0;
+    let mut n = core::mem::size_of::<u32>();
+    let r = sysctl(mib.as_ptr(), 2, &mut out as *mut u32 as *mut u8, &mut n, core::ptr::null(), 0);
+    if r == 0 { Some(out) } else { None }
+}
+
+/// `kill(2)`.
+#[inline]
+pub unsafe fn sys_kill(pid: i32, sig: i32) -> isize {
+    let r = kill(pid, sig);
+    errno_ret(r as isize)
 }

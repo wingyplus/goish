@@ -1632,6 +1632,7 @@ pub fn live_g_count() -> usize {
 /// affinity buffer is generous enough for any plausible host
 /// (65 536 CPUs); a popcount over the returned bytes gives the
 /// effective parallelism.
+#[cfg(target_os = "linux")]
 pub fn num_cpus() -> usize {
     const MAX_CPUS: usize = 64 * 1024;
     let mut buf = [0u8; MAX_CPUS / 8];
@@ -1654,6 +1655,7 @@ pub fn num_cpus() -> usize {
 /// Read a small kernel pseudo-file without libc. `path` must be
 /// NUL-terminated. The files used here are one-line cgroup controls,
 /// so a single fixed buffer is sufficient.
+#[cfg(target_os = "linux")]
 fn read_control_file(path: &[u8], buf: &mut [u8]) -> Option<usize> {
     let fd = crate::syscall::Open(
         path.as_ptr(),
@@ -1672,6 +1674,7 @@ fn read_control_file(path: &[u8], buf: &mut [u8]) -> Option<usize> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn parse_decimal(input: &[u8]) -> Option<usize> {
     if input.is_empty() {
         return None;
@@ -1689,6 +1692,7 @@ fn parse_decimal(input: &[u8]) -> Option<usize> {
 /// Parse cgroup v2's `cpu.max`: either `max PERIOD` or `QUOTA PERIOD`.
 /// Fractional CPU quotas require one runnable P, so round up just as Go's
 /// container-aware default does.
+#[cfg(target_os = "linux")]
 fn parse_cpu_max(input: &[u8]) -> Option<usize> {
     let mut fields = input
         .split(|byte| byte.is_ascii_whitespace())
@@ -1705,6 +1709,7 @@ fn parse_cpu_max(input: &[u8]) -> Option<usize> {
     Some((quota / period + usize::from(quota % period != 0)).max(1))
 }
 
+#[cfg(target_os = "linux")]
 fn read_decimal_control(path: &[u8]) -> Option<usize> {
     let mut buf = [0u8; 64];
     let n = read_control_file(path, &mut buf)?;
@@ -1716,6 +1721,7 @@ fn read_decimal_control(path: &[u8]) -> Option<usize> {
 
 /// Effective CPU quota exposed through the process's cgroup namespace.
 /// Prefer cgroup v2 and retain the legacy v1 CPU controller fallback.
+#[cfg(target_os = "linux")]
 fn cgroup_cpu_limit() -> Option<usize> {
     const CPU_MAX: &[u8] = b"/sys/fs/cgroup/cpu.max\0";
     let mut buf = [0u8; 64];
@@ -1731,6 +1737,12 @@ fn cgroup_cpu_limit() -> Option<usize> {
         return None;
     }
     Some((quota / period + usize::from(quota % period != 0)).max(1))
+}
+
+/// No cgroups outside Linux: the quota never lowers the CPU count.
+#[cfg(not(target_os = "linux"))]
+fn cgroup_cpu_limit() -> Option<usize> {
+    None
 }
 
 /// Number of Ps and Ms to create during runtime bootstrap.
@@ -1774,6 +1786,23 @@ pub fn startup_procs() -> usize {
         fallback
     } else {
         parsed.min(super::p::MAX_PS)
+    }
+}
+
+/// Number of CPUs, from `sysctl({CTL_HW, HW_NCPU})`. Returns 1 on
+/// failure or a non-positive answer.
+///
+/// Darwin has no affinity masks to count, so this is not
+/// `SchedGetaffinity` under another name — it is Go's darwin
+/// `getCPUCount` (`runtime/os_darwin.go`), which asks the MIB directly.
+/// Same fallback as the Linux arm.
+#[cfg(target_os = "macos")]
+pub fn num_cpus() -> usize {
+    const CTL_HW: i32 = 6;
+    const HW_NCPU: i32 = 3;
+    match unsafe { crate::sys::sys_sysctl_u32(CTL_HW, HW_NCPU) } {
+        Some(n) if n as i32 > 0 => n as usize,
+        _ => 1,
     }
 }
 

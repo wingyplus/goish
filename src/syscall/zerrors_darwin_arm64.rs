@@ -87,9 +87,11 @@ pub const SA_RESTORER: u64 = POISON_U64;
 
 // ─── clock ids ─────────────────────────────────────────────────────────
 //
-// `CLOCK_MONOTONIC` is 6 here and 1 on Linux. Darwin also offers
-// `CLOCK_UPTIME_RAW` (8), which is `mach_absolute_time` without the
-// unit conversion and is what M3 will want.
+// `CLOCK_MONOTONIC` is 6 here and 1 on Linux, and the difference is
+// not only the number: Darwin's counts time asleep, Linux's does not.
+// `CLOCK_UPTIME_RAW` (8) is the one that does not — it is
+// `mach_absolute_time` *with* the timebase conversion applied, i.e. Go's
+// darwin `nanotime` — and `runtime::sysmon::NANOTIME_CLOCK` selects it.
 pub const CLOCK_REALTIME: i32 = 0;
 pub const CLOCK_MONOTONIC: i32 = 6;
 pub const CLOCK_MONOTONIC_RAW: i32 = 4;
@@ -461,6 +463,22 @@ impl Errno {
         })
     }
 
+    // go: sdk 1.25.5 syscall/syscall_unix.go:138-140 Errno.Timeout
+    /// Go: `func (e Errno) Timeout() bool`. Without an inherent method
+    /// here, `os`'s `syscall::Errno::Timeout(self)` resolved to the
+    /// trait method it is implementing and recursed forever.
+    #[allow(non_snake_case)]
+    pub fn Timeout(&self) -> bool {
+        *self == EAGAIN || *self == EWOULDBLOCK || *self == ETIMEDOUT
+    }
+
+    // go: sdk 1.25.5 syscall/syscall_unix.go:134-136 Errno.Temporary
+    /// Go: `func (e Errno) Temporary() bool`.
+    #[allow(non_snake_case)]
+    pub fn Temporary(&self) -> bool {
+        *self == EINTR || *self == EMFILE || *self == ENFILE || self.Timeout()
+    }
+
     /// `Is(target)` — value equality, as on Linux.
     #[allow(non_snake_case)]
     pub fn Is(&self, target: Errno) -> bool {
@@ -515,6 +533,9 @@ pub const EPIPE: Errno = Errno(32);
 pub const ERANGE: Errno = Errno(34);
 /// **35 here, 11 on Linux** — the divergence the plan singled out.
 pub const EAGAIN: Errno = Errno(35);
+/// Same value as `EAGAIN` on Darwin, as on Linux.
+pub const EWOULDBLOCK: Errno = Errno(35);
+pub const ETIMEDOUT: Errno = Errno(60);
 pub const EINPROGRESS: Errno = Errno(36);
 pub const ENOTSUP: Errno = Errno(45);
 pub const ECONNABORTED: Errno = Errno(53);
@@ -523,3 +544,23 @@ pub const ENOBUFS: Errno = Errno(55);
 pub const ENOTEMPTY: Errno = Errno(66);
 pub const ENOSYS: Errno = Errno(78);
 pub const EOPNOTSUPP: Errno = Errno(102);
+
+// ─── added with upstream's os.Root, mode-bit and pprof surface ─────────
+//
+// Read from the SDK the same way as the rest of this file (a C program
+// printing the macros against `$(xcrun --show-sdk-path)`), on rebasing
+// the port onto a main that had grown these names on Linux.
+//
+// The mode bits are `u16` like the other `S_IF*` here — `mode_t` is
+// 16-bit on Darwin and these are compared against `st_mode`. The `_M`
+// spellings are Linux's names for the fifo/socket kinds as mode values.
+pub const O_NOFOLLOW: i32 = 0x100;
+pub const S_IFBLK: u16 = 0o060000;
+pub const S_IFCHR: u16 = 0o020000;
+pub const S_IFIFO_M: u16 = 0o010000;
+pub const S_IFSOCK_M: u16 = 0o140000;
+pub const S_ISUID: u16 = 0o4000;
+pub const S_ISGID: u16 = 0o2000;
+pub const S_ISVTX: u16 = 0o1000;
+pub const ITIMER_PROF: i32 = 2;
+pub const SIGPROF: i32 = 27;

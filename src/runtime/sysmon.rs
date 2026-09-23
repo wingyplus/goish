@@ -48,22 +48,36 @@ use crate::runtime::sched::{
 };
 use crate::runtime::spin::{raw_lock, SpinLock};
 use crate::syscall::{
-    self, ClockGettime, Clone, Futex, Timespec, CLOCK_MONOTONIC, CLONE_THREAD_FLAGS,
+    self, ClockGettime, Clone, Futex, Timespec, CLONE_THREAD_FLAGS,
     FUTEX_WAIT_PRIVATE, FUTEX_WAKE_PRIVATE, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ,
     PROT_WRITE,
 };
 
 // ─── Monotonic clock helper ───────────────────────────────────────
 
+/// The clock id whose reading is Go's `runtime.nanotime`: monotonic,
+/// and **not advancing while the machine sleeps**.
+///
+/// On Linux that is `CLOCK_MONOTONIC`. On Darwin it is not —
+/// `CLOCK_MONOTONIC` there counts time asleep (measured ~5.4 days ahead
+/// on a laptop that had slept), and Go's darwin `nanotime1`
+/// (`runtime/sys_darwin.go`) reads `mach_absolute_time` scaled by the
+/// timebase instead. `CLOCK_UPTIME_RAW` is that clock with the scaling
+/// already applied (measured within 166 ns of the hand conversion).
+#[cfg(target_os = "linux")]
+pub const NANOTIME_CLOCK: i32 = crate::syscall::CLOCK_MONOTONIC;
+#[cfg(target_os = "macos")]
+pub const NANOTIME_CLOCK: i32 = crate::syscall::CLOCK_UPTIME_RAW;
+
 // go: none — Goish runtime: Go reads the monotonic clock through
 // runtime.nanotime, a per-GOOS assembly/vDSO routine with no portable
 // Go body to cite. This is the syscall spelling of the same thing.
-/// Read CLOCK_MONOTONIC and return ns since an arbitrary fixed
+/// Read `NANOTIME_CLOCK` and return ns since an arbitrary fixed
 /// epoch. Used as the timer-heap deadline reference.
 #[inline]
 pub fn monotonic_ns() -> i64 {
     let mut ts = Timespec::default();
-    let _ = ClockGettime(CLOCK_MONOTONIC, &mut ts);
+    let _ = ClockGettime(NANOTIME_CLOCK, &mut ts);
     return ts
         .tv_sec
         .wrapping_mul(1_000_000_000)

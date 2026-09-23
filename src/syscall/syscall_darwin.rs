@@ -492,14 +492,23 @@ pub fn Lchown(path: *const u8, uid: i32, gid: i32) -> i32 {
     todo("Lchown", "M2")
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `uname(3)` — 0 or `-errno`. Darwin's `Utsname` is five 256-byte
+/// fields with no `domainname` (`ztypes_darwin_arm64.rs`).
+#[allow(non_snake_case)]
 pub fn Uname(buf: &mut Utsname) -> i32 {
-    todo("Uname", "M3")
+    unsafe { sys::sys_uname(buf as *mut Utsname as *mut u8) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `getrandom(2)`'s contract over `arc4random_buf(3)`, which is what Go's
+/// darwin `readRandom` calls (`runtime/os_darwin.go`). It cannot fail
+/// and never blocks, so every flag — `GRND_NONBLOCK`, `GRND_RANDOM`,
+/// `GRND_INSECURE` — is already satisfied and the full length is
+/// always returned.
+#[allow(non_snake_case)]
 pub fn Getrandom(buf: *mut u8, buflen: usize, flags: u32) -> i64 {
-    todo("Getrandom", "M3")
+    let _ = flags;
+    unsafe { sys::sys_arc4random_buf(buf, buflen) };
+    buflen as i64
 }
 
 #[allow(non_snake_case, unused_variables)]
@@ -512,14 +521,23 @@ pub fn Recvfrom(fd: i32, buf: *mut u8, len: usize, flags: i32) -> isize {
     todo("Recvfrom", "M9")
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `clock_gettime(2)` — read `clk` into `tp`; 0 or `-errno`.
+///
+/// Truthful to Darwin's clock ids, which is not the same as truthful to
+/// the caller's intent: `CLOCK_MONOTONIC` here counts time asleep
+/// (measured ~5.4 days ahead of `CLOCK_UPTIME_RAW` on a laptop that
+/// had slept), where Linux's does not. goish's own monotonic reads go
+/// through `runtime::sysmon::monotonic_ns`, which picks the right id.
+#[allow(non_snake_case)]
 pub fn ClockGettime(clk: i32, tp: *mut Timespec) -> isize {
-    todo("ClockGettime", "M3")
+    unsafe { sys::sys_clock_gettime(clk, tp as *mut u8) }
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `nanosleep(2)`. Same contract as Linux: 0, or `-errno` (`-EINTR`
+/// with `rem` filled if a signal interrupted it).
+#[allow(non_snake_case)]
 pub fn Nanosleep(req: *const Timespec, rem: *mut Timespec) -> isize {
-    todo("Nanosleep", "M3")
+    unsafe { sys::sys_nanosleep(req as *const u8, rem as *mut u8) }
 }
 
 /// The calling thread's id, for `M::procid`.
@@ -537,44 +555,59 @@ pub fn Gettid() -> i32 {
     unsafe { sys::sys_thread_id() as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `getpid(2)` — process id. Cannot fail.
+#[allow(non_snake_case)]
 pub fn Getpid() -> i32 {
-    todo("Getpid", "M3")
+    unsafe { sys::sys_getpid() }
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `getuid(2)`. Cannot fail; returned as `i32` like the Linux
+/// wrapper, which is how every caller already reads it.
+#[allow(non_snake_case)]
 pub fn Getuid() -> i32 {
-    todo("Getuid", "M3")
+    unsafe { sys::sys_getuid() as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `getgid(2)`. Cannot fail; returned as `i32` like the Linux
+/// wrapper, which is how every caller already reads it.
+#[allow(non_snake_case)]
 pub fn Getgid() -> i32 {
-    todo("Getgid", "M3")
+    unsafe { sys::sys_getgid() as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `geteuid(2)`. Cannot fail; returned as `i32` like the Linux
+/// wrapper, which is how every caller already reads it.
+#[allow(non_snake_case)]
 pub fn Geteuid() -> i32 {
-    todo("Geteuid", "M3")
+    unsafe { sys::sys_geteuid() as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `getegid(2)`. Cannot fail; returned as `i32` like the Linux
+/// wrapper, which is how every caller already reads it.
+#[allow(non_snake_case)]
 pub fn Getegid() -> i32 {
-    todo("Getegid", "M3")
+    unsafe { sys::sys_getegid() as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `getppid(2)` — parent process id. Cannot fail.
+#[allow(non_snake_case)]
 pub fn Getppid() -> i32 {
-    todo("Getppid", "M3")
+    unsafe { sys::sys_getppid() }
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `getgroups(2)` — count on success, `-errno` on failure. `gid_t` is
+/// `u32` here as on Linux.
+#[allow(non_snake_case)]
 pub fn Getgroups(size: i32, list: *mut u32) -> isize {
-    todo("Getgroups", "M3")
+    unsafe { sys::sys_getgroups(size, list) }
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `kill(2)` — 0 or `-errno`. The signal numbers are Darwin's
+/// (`zerrors_darwin_arm64.rs`), so callers spelling them by name are
+/// portable and callers spelling them by number are not.
+#[allow(non_snake_case)]
 pub fn Kill(pid: i32, sig: i32) -> isize {
-    todo("Kill", "M3")
+    unsafe { sys::sys_kill(pid, sig) }
 }
 
 #[allow(non_snake_case, unused_variables)]
@@ -779,3 +812,96 @@ pub fn Statfs<P: Into<crate::string>>(path: P, buf: &mut Statfs_t) -> crate::err
     todo("Statfs", "M2")
 }
 
+
+// ─── added with upstream's os.Root, Unix-socket and pprof surface ──────
+//
+// Linux gained these while the port was on a branch. Same signatures as
+// `syscall_linux.rs`, each an abort naming the milestone that owns it:
+// the fd-relative file calls are the M2 file surface, the raw socket
+// calls are M9, and `Setitimer` drives pprof's SIGPROF, which is M6.
+
+#[allow(non_snake_case, unused_variables)]
+pub fn __openat_raw(dirfd: i32, path: *const u8, flags: i32, mode: i32) -> i32 {
+    todo("__openat_raw", "M2")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn Mkdirat(dirfd: i32, path: *const u8, mode: u32) -> i32 {
+    todo("Mkdirat", "M2")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn Unlinkat(dirfd: i32, path: *const u8, flags: i32) -> i32 {
+    todo("Unlinkat", "M2")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn Fstatat(dirfd: i32, path: *const u8, out: &mut Stat_t, flags: i32) -> i32 {
+    todo("Fstatat", "M2")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn Renameat(olddirfd: i32, oldpath: *const u8, newdirfd: i32, newpath: *const u8) -> i32 {
+    todo("Renameat", "M2")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn Linkat(
+    olddirfd: i32,
+    oldpath: *const u8,
+    newdirfd: i32,
+    newpath: *const u8,
+    flags: i32,
+) -> i32 {
+    todo("Linkat", "M2")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn Symlinkat(target: *const u8, newdirfd: i32, linkpath: *const u8) -> i32 {
+    todo("Symlinkat", "M2")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn Fchdir(fd: i32) -> i32 {
+    todo("Fchdir", "M2")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn Fchown(fd: i32, uid: u32, gid: u32) -> i32 {
+    todo("Fchown", "M2")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn Fchmodat(dirfd: i32, path: *const u8, mode: u32, flags: i32) -> i32 {
+    todo("Fchmodat", "M2")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn Fchownat(dirfd: i32, path: *const u8, uid: u32, gid: u32, flags: i32) -> i32 {
+    todo("Fchownat", "M2")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn Readlinkat(dirfd: i32, path: *const u8, buf: *mut u8, bufsiz: usize) -> isize {
+    todo("Readlinkat", "M2")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn __bind_raw(fd: i32, addr: *const u8, addrlen: u32) -> i32 {
+    todo("__bind_raw", "M9")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn __connect_raw(fd: i32, addr: *const u8, addrlen: u32) -> i32 {
+    todo("__connect_raw", "M9")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn __accept4_raw(fd: i32, addr: *mut u8, addrlen: *mut u32, flags: i32) -> i32 {
+    todo("__accept4_raw", "M9")
+}
+
+#[allow(non_snake_case, unused_variables)]
+pub fn Setitimer(which: i32, new: *const Itimerval, old: *mut Itimerval) -> i32 {
+    todo("Setitimer", "M6")
+}

@@ -19,9 +19,11 @@
 //
 // The scaling is deliberately not done here. goish's single caller is
 // `runtime::rand`'s startup seed, which wants monotonic bits and no
-// unit — and Go's own comment notes `numer == denom == 1` is the common
-// case, which it is on Apple Silicon, so the conversion would be an
-// identity anyway. `time.Now` is M3 and is where the timebase belongs.
+// unit, so raw ticks serve. They are **not** nanoseconds: Go's comment
+// that `numer == denom == 1` is common does not hold on Apple Silicon,
+// where the timebase measures 125/3 (a 24 MHz counter). Nanoseconds come
+// from `clock_gettime(CLOCK_UPTIME_RAW)` — see `runtime::sysmon::
+// NANOTIME_CLOCK`.
 //
 // The alternative, `MRS CNTVCT_EL0`, is available at EL0 on this
 // hardware and is not what Go uses on any OS — see the note in

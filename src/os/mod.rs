@@ -1307,13 +1307,13 @@ pub fn Chdir<N: Into<string>>(name: N) -> error {
 fn syscallMode(i: FileMode) -> u32 {
     let mut o: u32 = i.Perm().0;
     if (i & ModeSetuid) != FileMode(0) {
-        o |= syscall::S_ISUID;
+        o |= u32::from(syscall::S_ISUID);
     }
     if (i & ModeSetgid) != FileMode(0) {
-        o |= syscall::S_ISGID;
+        o |= u32::from(syscall::S_ISGID);
     }
     if (i & ModeSticky) != FileMode(0) {
-        o |= syscall::S_ISVTX;
+        o |= u32::from(syscall::S_ISVTX);
     }
     // Go: "No mapping for Go's ModeTemporary (plan9 only)."
     return o;

@@ -62,14 +62,24 @@ pub(crate) fn statUnix(fi: &dyn fs::FileInfo, h: &mut Header, doNameLookups: boo
     h.ChangeTime = statCtime(st);
 
     // Best effort at populating Devmajor and Devminor. Go switches on
-    // GOOS across seven layouts; this is the linux one, copied from
-    // golang.org/x/sys/unix/dev_linux.go as Go's comment says.
+    // GOOS across seven layouts; goish carries the two it targets.
+    // Linux: copied from golang.org/x/sys/unix/dev_linux.go.
+    #[cfg(target_os = "linux")]
     if h.Typeflag == TypeChar || h.Typeflag == TypeBlock {
         let dev = st.st_rdev;
         let mut major: u32 = crate::convert::uint32((dev & 0x0000_0000_000f_ff00) >> 8);
         major |= crate::convert::uint32((dev & 0xffff_f000_0000_0000) >> 32);
         let mut minor: u32 = crate::convert::uint32(dev & 0x0000_0000_0000_00ff);
         minor |= crate::convert::uint32((dev & 0x0000_0fff_fff0_0000) >> 12);
+        h.Devmajor = crate::convert::int64(major);
+        h.Devminor = crate::convert::int64(minor);
+    }
+    // Darwin: `dev_t` is 32-bit — golang.org/x/sys/unix/dev_darwin.go.
+    #[cfg(target_os = "macos")]
+    if h.Typeflag == TypeChar || h.Typeflag == TypeBlock {
+        let dev = st.st_rdev;
+        let major: u32 = crate::convert::uint32((dev >> 24) & 0xff);
+        let minor: u32 = crate::convert::uint32(dev & 0xffffff);
         h.Devmajor = crate::convert::int64(major);
         h.Devminor = crate::convert::int64(minor);
     }
