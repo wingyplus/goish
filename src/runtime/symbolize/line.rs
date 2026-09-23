@@ -29,6 +29,18 @@ pub struct LineRow {
     pub file_idx: u32,
 }
 
+/// `file_idx` of a row that marks a `DW_LNE_end_sequence` — the first
+/// address past a sequence. It is never a real file index (DWARF 4
+/// numbers files from 1, and a CU with 2^32-1 files does not exist).
+///
+/// Without these, a PC past the end of the last sequence — or in a gap
+/// between two — resolved to the last row before it, so any address
+/// above the code (a data pointer, a slid-away garbage PC) came back
+/// with a plausible file:line. That surfaced on darwin, where
+/// `FuncForPC(1)` looks up `0 - slide`, a huge address, and got a
+/// `Func` back instead of `nil`.
+const END_SEQUENCE: u32 = u32::MAX;
+
 pub struct FileEntry {
     pub dir_idx: usize,
     pub name: Vec<u8>,
@@ -66,7 +78,11 @@ impl Programs {
         if lo == 0 {
             return None;
         }
-        Some(self.rows[lo - 1])
+        let r = self.rows[lo - 1];
+        if r.file_idx == END_SEQUENCE {
+            return None;
+        }
+        Some(r)
     }
 
     /// Resolve `(program_id, file_idx)` into a path written into `out`.
@@ -193,7 +209,10 @@ pub fn build(debug_line: &[u8], comp_dirs: &[(u64, Vec<u8>)]) -> Programs {
         }
         off = prog_end;
     }
-    rows.sort_by_key(|r| r.pc);
+    // At one address, an end-of-sequence marker sorts BEFORE a real
+    // row: when one function's sequence ends exactly where the next
+    // one's begins, the lookup must land on the new sequence's row.
+    rows.sort_by_key(|r| (r.pc, r.file_idx != END_SEQUENCE));
     Programs { rows, programs }
 }
 
@@ -290,8 +309,18 @@ fn decode_program(
             let ext_op = read_u8(buf, off)?;
             match ext_op {
                 1 => {
-                    // DW_LNE_end_sequence — Goish doesn't propagate this
-                    // flag downstream yet; reset row state per DWARF spec.
+                    // DW_LNE_end_sequence — `address` is one past the
+                    // sequence's last instruction. Record it as a
+                    // terminator (see `END_SEQUENCE`), then reset row
+                    // state per the DWARF spec.
+                    if address != 0 {
+                        rows.push(LineRow {
+                            pc: address,
+                            line: 0,
+                            program_id,
+                            file_idx: END_SEQUENCE,
+                        });
+                    }
                     address = 0;
                     file = 1;
                     line = 1;
