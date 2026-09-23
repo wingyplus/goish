@@ -19,11 +19,18 @@
 #   * anything that blocks on a channel, a WaitGroup or a contended
 #     Mutex — `current_g()` is None, so it fatals rather than parking.
 #
-# Anything that reaches `current_m()` is also out until M4 — that turns
-# out to be the real wall, and it is a loud one: the binary prints
-# "goish: the darwin/arm64 thread pointer is not implemented yet (M4):
-# slot0 / current_m" and exits 2. `defer_smoke`, `aes_smoke`,
-# `asn1_smoke` and `atomic_value_smoke` all stop there today.
+# M4a (main-thread TLS) removed the `current_m()` wall that stopped
+# `defer_smoke` and friends at M1. Measured over the 487 `_smoke`
+# examples that do not use `goish::import!`: 272 pass. Of the rest, the
+# walls by count are M3 time/CPU count (`ClockGettime` 61,
+# `SchedGetaffinity` 15), M5 goroutines (60 — `go!` aborts naming M5
+# rather than queueing a G nothing runs), M9 sockets (24), raw
+# `syscallN` call sites (19) and the M2 file surface (~20).
+# `aes_smoke`, `asn1_smoke` and `atomic_value_smoke` now stop at M3.
+#
+# The entries below are a cross-section of the 272, one or two per area,
+# not all of them: each debug binary is ~12 MiB and disk is the binding
+# constraint on this host.
 
 # boot
 hello
@@ -52,3 +59,53 @@ cmp_smoke
 crc32_smoke
 crc64_smoke
 sort_smoke
+
+# M4a — the thread pointer. Selected from the post-M4a probe; not each
+# one individually measured against M1, though `defer_smoke` is the
+# one the M1 notes named as stopping at `current_m()`.
+defer_smoke
+type_name_smoke
+iface_registry_smoke
+errors_as_smoke
+errors_join_smoke
+reflect_smoke
+runtime_memstats_smoke
+runtime_mcentral_units_smoke
+runtime_palloc_units_smoke
+sync_atomic_smoke
+sync_oncefunc_smoke
+gomap_smoke
+map_smoke
+container_heap_smoke
+iter_seq_smoke
+slices_lib_smoke
+fmt_sprint_smoke
+strconv_smoke
+strings_replacer_smoke
+unicode_norm_smoke
+hex_dump_smoke
+json_smoke
+csv_smoke
+regexp_smoke
+math_big_smoke
+zlib_offset_smoke
+tar_smoke
+sha256_smoke
+sha3_shake_smoke
+hmac_smoke
+chacha20poly1305_smoke
+ecdsa_smoke
+x509_create_smoke
+pem_smoke
+url_parse_smoke
+mime_parse_smoke
+net_ip_smoke
+net_ipmask_smoke
+http_header_smoke
+http_request_parse_smoke
+io_multi_smoke
+io_fs_smoke
+os_setenv_unsetenv_smoke
+testing_fstest_smoke
+time_format_smoke
+tabwriter_smoke

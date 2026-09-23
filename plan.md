@@ -324,7 +324,7 @@ neither docker nor qemu.
 | Go-shaped wrappers | `syscall/syscall_linux.rs` | ← same | `syscall/syscall_darwin.rs` |
 | constants | `syscall/zsysnum_linux_amd64.rs` | `zsysnum_linux_arm64.rs` | `syscall/zerrors_darwin_arm64.rs` (no `zsysnum` — libSystem has no numbers) |
 | struct layouts | in `syscall_linux.rs` | ← same | `syscall/ztypes_darwin_arm64.rs` |
-| thread pointer | `sched/tls/tls_linux_amd64.rs` | `tls_linux_arm64.rs` | `tls_darwin_arm64.rs` (2 real, 5 M4 aborts) |
+| thread pointer | `sched/tls/tls_linux_amd64.rs` | `tls_linux_arm64.rs` | `tls_darwin_arm64.rs` (a pthread TSD slot, read via `TPIDRRO_EL0` — M4a) |
 | cycle counter | `cputicks/cputicks_amd64.rs` | `cputicks_linux_arm64.rs` | `cputicks_darwin_arm64.rs` (`mach_absolute_time`) |
 | boot | `runtime/mod.rs` `__goish_rt0` | ← same | `runtime/rt0_darwin.rs` (4 steps, not 15) |
 | entry | `runtime/entry.rs` `_start` | ← same | `runtime/entry.rs` — a C `main`, not a stub |
@@ -356,6 +356,70 @@ produce no error at all, and so are the easiest to trip over:
   (M10). Missing initialisation, not a link failure.
 - **`current_g()` is `None` throughout**, so any blocking primitive fatals rather than parking
   (M5).
+
+---
+
+### M4a on darwin/arm64 — main-thread TLS, landed 2026-09-23
+
+`current_m()` works on the main thread. `make run-darwin` runs **63 examples natively, 63 pass**
+(the 17 from M1 plus a 46-example cross-section). Over the 487 `_smoke` examples that do not use
+`goish::import!`, **272 now pass**.
+
+**What landed.** `sched/tls/tls_darwin_arm64.rs` is Go's scheme, not a `pthread_getspecific`
+wrapper: `tlsinit` (`runtime/sys_darwin_arm64.go`) allocates a key, writes a magic value through
+`pthread_setspecific`, and scans the TSD array at `TPIDRRO_EL0 & ~7` to learn the key's byte
+offset; `load_g`/`save_g` (`runtime/tls_arm64.s`) then read and write that slot directly. goish's
+thread pointer is the slot's *contents* — `&MStorage.tls_self`, the value `fs`/`TPIDR_EL0` hold
+on Linux — so `current_m`, `acquirem` and `locks_inc::<OFF>` port unchanged. `setup_main_tls`
+calls `tls::init()` first on this target; `setup_main_g0` takes its bounds from
+`pthread_get_stackaddr_np`/`_stacksize_np` instead of `/proc/self/maps`; `MStorage` gains a
+macOS-only `pthread` field (the `pthread_t` M6 and M8 signal through); `Gettid` and `Sigaltstack`
+are real.
+
+**Four findings.**
+
+1. **The plan's M4 row said "ship `pthread_getspecific` first", and that was the wrong order.**
+   Not for speed: `acquirem`/`releasem` are in `goish_rt_text`, and a `pthread_getspecific` would
+   put a call into libSystem's `.text` — outside the PC range M8's SIGURG handler treats as
+   runtime code — inside the very window those two exist to protect. The library call is used
+   exactly once, in `init`, to cross-check the direct read against it. An unset offset aborts
+   loudly rather than reading TSD slot 0, which holds the thread's `pthread_t` and would
+   dereference to plausible garbage instead of faulting.
+
+2. **libpthread's main-thread bounds are right on this macOS, and the argv cap still matters.**
+   Measured: `top=0x16d988000`, `size=0x7fc000` (8 MiB less one 16 KiB page), `sp` and `argv`
+   both inside. `argv` sits 0x1808 below the top, so the Linux cap (`g0` stops at `argv − 8`)
+   applies unchanged and is load-bearing here too — without it M5's first `mcall` would run
+   scheduler frames over the environment block, exactly the Linux `exec::LookPath` bug.
+   `main_stack_bounds` still checks `sp` is inside rather than trusting the numbers.
+
+3. **Fixing an abort can turn it into a hang, and did.** With `current_m()` working, `go!` no
+   longer aborted — it queued a G that nothing on this target can run (no `gogo` until M5), and
+   callers spinning on `Gosched()` (a no-op off-goroutine) hung: 59 of the probe's examples
+   timed out, every `http_*` server test and the `grow_*` family among them. **One exited 0:
+   `io_pipe_smoke` runs all its checks inside `go!`, so it "passed" having checked nothing.**
+   `scheduler::enqueue_runnable` now aborts naming M5 on `aarch64`, restoring finding 3 of M1 —
+   all 60 now fail loudly. M5 deletes the guard. The general rule: **when a milestone removes a
+   loud abort, re-probe for what was relying on it**, and treat exit 0 as a claim to check.
+
+4. **The next wall is M3, not M5.** By count over the remaining 215: `ClockGettime` 61 and
+   `SchedGetaffinity` 15 (M3), `go!` 60 (M5), `Socket` 24 (M9), raw `syscallN` call sites 19,
+   the M2 file surface ~20. `aes_smoke`, `asn1_smoke` and `atomic_value_smoke` — named by M1 as
+   stopping at `current_m()` — now stop at `ClockGettime`. M3 is also the smallest milestone left:
+   `clock_gettime`, `nanosleep`, `arc4random_buf` and `sysctlbyname` are single libSystem calls.
+
+**Not done in M4a, and why.** Worker Ms via `pthread_create`, and `start_sysmon`: both are
+threads with nothing to run before `gogo`, so they land with M5. One trap waiting there — Linux
+workers see `TLS_READY` from their first instruction because `CLONE_SETTLS` plants the thread
+pointer atomically with the clone; `pthread_create` has no equivalent, so the M5 start routine
+must call `tls::set_base` before anything takes a `SpinLock`.
+
+**Gates.** darwin/arm64: native, 63/63. linux/amd64 and linux/arm64: **compile-and-link only**
+(`hello`, `defer_smoke`, `chan_unbuffered`, `sched_swap` via `scripts/cross_lld.py`) — the docker
+CLI colima needs was not installed on the host, so neither ran. The shared-code changes are a
+pure extract-function in `setup_main_g0` and an `if cfg!(target_arch = "aarch64")` that
+compiles away on x86_64, but that is argument, not measurement; re-run `make run-arm64` and the
+amd64 smoke before relying on it. `goishlint` did not run either (closed source).
 
 ---
 
