@@ -127,6 +127,27 @@ fn check_ffi_tls_layout() {
 #[cfg(not(feature = "ffi-system-tls"))]
 fn check_ffi_tls_layout() {}
 
+/// Start one worker on `[stack, stack + STACK_SIZE)` with its thread
+/// pointer already set to `tls`. Positive on success.
+///
+/// Linux: `clone(CLONE_THREAD_FLAGS | CLONE_SETTLS)`, which plants the
+/// thread pointer atomically with the thread and returns its tid.
+/// Darwin has no clone; `syscall::NewThread` is its spelling of the
+/// same contract — a pthread on the caller's stack whose trampoline
+/// sets the TSD slot before `entry` runs (`sched::start_os_thread`
+/// uses it for every M) — and returns the `pthread_t`. Everything this
+/// test asserts about the workers is read from inside them, so it
+/// holds the same on both.
+#[cfg(target_os = "linux")]
+unsafe fn spawn_worker(stack: *mut u8, entry: extern "C" fn() -> !, tls: usize) -> i64 {
+    syscall::Clone(syscall::CLONE_THREAD_FLAGS, stack.add(STACK_SIZE), entry, tls as u64)
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn spawn_worker(stack: *mut u8, entry: extern "C" fn() -> !, tls: usize) -> i64 {
+    syscall::NewThread(stack, STACK_SIZE, entry, tls) as i64
+}
+
 #[goish::main]
 fn main() {
     check_ffi_tls_layout();
@@ -172,14 +193,7 @@ fn main() {
                 0,
             );
             check(stack != syscall::MAP_FAILED, b"mmap worker stack\n");
-            let top = stack.add(STACK_SIZE);
-
-            let tid = syscall::Clone(
-                syscall::CLONE_THREAD_FLAGS,
-                top,
-                entries[i],
-                ws.storage.tls_base() as u64,
-            );
+            let tid = spawn_worker(stack, entries[i], ws.storage.tls_base());
             check(tid > 0, b"clone returned non-positive\n");
             // slot_idx is read by the worker; suppress unused warning.
             let _ = ws.slot_idx;
