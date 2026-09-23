@@ -31,12 +31,23 @@ extern crate goish;
 use goish::gostring::string;
 use goish::{fmt, int, os};
 
+#[cfg(not(target_os = "macos"))]
 const GO: [&str; 5] = [
     "regular        len=12 \"hello\\nworld\\n\"",
     "empty          len=0 \"\"",
     "proc-ostype    len=6 \"Linux\\n\"",
     "missing        err",
     "proc-statsize  statsize=0",
+];
+// darwin/arm64: the generator run by Go on darwin/arm64. There is no
+// /proc, so the probe row is an error and the statsize row is never
+// printed; the zero-stat-size read it probes is a Linux /proc property.
+#[cfg(target_os = "macos")]
+const GO: [&str; 4] = [
+    "regular        len=12 \"hello\\nworld\\n\"",
+    "empty          len=0 \"\"",
+    "proc-ostype    err",
+    "missing        err",
 ];
 
 static mut BAD: usize = 0;

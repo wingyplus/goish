@@ -64,6 +64,14 @@ fn pathErr(op: &str, path: &str, e: error) -> error {
     });
 }
 
+/// ETIMEDOUT's message is the OS's: Go's error table says "connection
+/// timed out" on Linux and "operation timed out" on Darwin
+/// (syscall/zerrors_linux_amd64.go, zerrors_darwin_arm64.go).
+#[cfg(not(target_os = "macos"))]
+const ETIMEDOUT_TEXT: &str = "connection timed out";
+#[cfg(target_os = "macos")]
+const ETIMEDOUT_TEXT: &str = "operation timed out";
+
 #[goish::main]
 fn main() {
     let mut failed = 0;
@@ -319,7 +327,7 @@ fn main() {
                 true,
                 "resource temporarily unavailable",
             ),
-            (syscall::ETIMEDOUT, true, true, "connection timed out"),
+            (syscall::ETIMEDOUT, true, true, ETIMEDOUT_TEXT),
             (syscall::EINTR, false, true, "interrupted system call"),
             (syscall::EMFILE, false, true, "too many open files"),
             (

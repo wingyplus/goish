@@ -58,6 +58,7 @@ fn n(v: i64) -> string {
     fmt::Sprintf!("%d", v)
 }
 /// Go's output, verbatim.
+#[cfg(not(target_os = "macos"))]
 const GO: [&str; 9] = [
     "write-readonly             [0 \"write PATH: bad file descriptor\"]",
     "write-readonly-iface       [0 \"write PATH: bad file descriptor\"]",
@@ -66,6 +67,19 @@ const GO: [&str; 9] = [
     "read-writeonly-iface       [0 \"read PATH: bad file descriptor\"]",
     "write-devfull              [0 \"write /dev/full: no space left on device\"]",
     "write-devfull-iface        [0 \"write /dev/full: no space left on device\"]",
+    "write-1MiB-iface           [true \"<nil>\"]",
+    "size-1MiB                  [1048576]",
+];
+/// darwin/arm64: there is no /dev/full, so OpenFile fails and Go — like
+/// this program — prints neither devfull row. ENOSPC's text is unchanged
+/// there, but no device produces it on demand.
+#[cfg(target_os = "macos")]
+const GO: [&str; 7] = [
+    "write-readonly             [0 \"write PATH: bad file descriptor\"]",
+    "write-readonly-iface       [0 \"write PATH: bad file descriptor\"]",
+    "copy-readonly              [0 \"write PATH: bad file descriptor\"]",
+    "read-writeonly             [0 \"read PATH: bad file descriptor\"]",
+    "read-writeonly-iface       [0 \"read PATH: bad file descriptor\"]",
     "write-1MiB-iface           [true \"<nil>\"]",
     "size-1MiB                  [1048576]",
 ];

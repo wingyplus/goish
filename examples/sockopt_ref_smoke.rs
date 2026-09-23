@@ -37,6 +37,7 @@ use goish::net::net as gnet;
 use goish::{fmt, go, string, syscall, time};
 
 /// Go's output, verbatim.
+#[cfg(not(target_os = "macos"))]
 const GO: [&str; 14] = [
     "default-nodelay        val=1",
     "default-keepalive      val=1",
@@ -44,6 +45,26 @@ const GO: [&str; 14] = [
     "nodelay-true         op=\"\"     isClosed=false val=1   msg=\"<nil>\"",
     "keepalive-false      op=\"\"     isClosed=false val=0   msg=\"<nil>\"",
     "keepalive-true       op=\"\"     isClosed=false val=1   msg=\"<nil>\"",
+    "keepaliveperiod-30s  op=\"\"     isClosed=false val=15  msg=\"<nil>\"",
+    "  keepidle-after       val=30",
+    "linger-neg           op=\"\"     isClosed=false val=0   msg=\"<nil>\"",
+    "linger-0             op=\"\"     isClosed=false val=1   msg=\"<nil>\"",
+    "linger-5             op=\"\"     isClosed=false val=1   msg=\"<nil>\"",
+    "nodelay-closed       op=\"set\"  isClosed=true  val=-1  msg=\"set tcp LOCAL->REMOTE: use of closed network connection\"",
+    "keepalive-closed     op=\"set\"  isClosed=true  val=-1  msg=\"set tcp LOCAL->REMOTE: use of closed network connection\"",
+    "linger-closed        op=\"set\"  isClosed=true  val=-1  msg=\"set tcp LOCAL->REMOTE: use of closed network connection\"",
+];
+// darwin/arm64: the same readback run by Go on darwin/arm64. Darwin's
+// getsockopt answers an enabled boolean option with the option's own flag
+// bit (TF_NODELAY 4, SO_KEEPALIVE 8) rather than 1; everything else agrees.
+#[cfg(target_os = "macos")]
+const GO: [&str; 14] = [
+    "default-nodelay        val=4",
+    "default-keepalive      val=8",
+    "nodelay-false        op=\"\"     isClosed=false val=0   msg=\"<nil>\"",
+    "nodelay-true         op=\"\"     isClosed=false val=4   msg=\"<nil>\"",
+    "keepalive-false      op=\"\"     isClosed=false val=0   msg=\"<nil>\"",
+    "keepalive-true       op=\"\"     isClosed=false val=8   msg=\"<nil>\"",
     "keepaliveperiod-30s  op=\"\"     isClosed=false val=15  msg=\"<nil>\"",
     "  keepidle-after       val=30",
     "linger-neg           op=\"\"     isClosed=false val=0   msg=\"<nil>\"",

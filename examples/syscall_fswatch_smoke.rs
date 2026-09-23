@@ -16,6 +16,7 @@
 
 #![no_std]
 #![no_main]
+#![cfg_attr(not(target_os = "linux"), allow(unused))]
 #![allow(non_snake_case)]
 
 extern crate alloc;
@@ -82,8 +83,8 @@ fn poll_read(fd: goish::int, buf: &mut [u8], timeout_ms: goish::int) -> usize {
     n as usize
 }
 
-#[goish::main]
-fn main() {
+#[cfg(target_os = "linux")]
+fn run() {
     let root = os::TempDir() + "/goish_fswatch_smoke";
     let _ = os::RemoveAll(root.clone());
     let err = os::MkdirAll(root.clone(), 0o755);
@@ -215,4 +216,19 @@ fn main() {
     let msg = b"SYSCALL_FSWATCH_OK all test groups passed\n";
     syscall::Write(syscall::STDOUT, msg.as_ptr(), msg.len());
     syscall::Exit(0);
+}
+
+// inotify, fanotify and name_to_handle_at are Linux kernel interfaces;
+// Go offers them only in golang.org/x/sys/unix under //go:build linux,
+// and a darwin watcher is built on kqueue/FSEvents instead. Elsewhere
+// this smoke skips.
+#[goish::main]
+fn main() {
+    #[cfg(target_os = "linux")]
+    run();
+    #[cfg(not(target_os = "linux"))]
+    {
+        const SKIP: &[u8] = b"syscall_fswatch_smoke: SKIP (Linux-only inotify/fanotify)\n";
+        goish::syscall::Write(goish::syscall::STDOUT, SKIP.as_ptr(), SKIP.len());
+    }
 }

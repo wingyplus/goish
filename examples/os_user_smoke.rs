@@ -5,8 +5,8 @@
 //   2. LookupId("0") returns User{Username: "root", ...}.
 //   3. Lookup of non-existent user returns UnknownUserError.
 //   4. LookupId of non-existent uid returns UnknownUserIdError.
-//   5. LookupGroup("root") returns Group{Name: "root", Gid: "0"}.
-//   6. LookupGroupId("0") returns Group{Name: "root", ...}.
+//   5. LookupGroup(GROUP0) returns Group{Name: GROUP0, Gid: "0"}.
+//   6. LookupGroupId("0") returns Group{Name: GROUP0, ...}.
 //   7. LookupGroup of non-existent group returns UnknownGroupError.
 //   8. LookupGroupId of non-existent gid returns UnknownGroupIdError.
 //   9. Current() returns a non-empty Username.
@@ -124,9 +124,16 @@ fn test_4_unknown_user_id() {
     }
 }
 
+/// The name of gid 0: "root" on Linux, "wheel" on the BSDs, macOS
+/// included — there is no group called "root" there.
+#[cfg(not(target_os = "macos"))]
+const GROUP0: &str = "root";
+#[cfg(target_os = "macos")]
+const GROUP0: &str = "wheel";
+
 fn test_5_lookup_group_root() {
-    let (g, e) = user::LookupGroup(s("root"));
-    if e.IsNil() && g.Name == s("root") && g.Gid == s("0") {
+    let (g, e) = user::LookupGroup(s(GROUP0));
+    if e.IsNil() && g.Name == s(GROUP0) && g.Gid == s("0") {
         ok_line(b"[ 5] LookupGroup(\"root\")         PASS\n");
     } else {
         ok_line(b"[ 5] LookupGroup(\"root\")         FAIL\n");
@@ -136,7 +143,7 @@ fn test_5_lookup_group_root() {
 
 fn test_6_lookup_group_id_zero() {
     let (g, e) = user::LookupGroupId(s("0"));
-    if e.IsNil() && g.Name == s("root") {
+    if e.IsNil() && g.Name == s(GROUP0) {
         ok_line(b"[ 6] LookupGroupId(\"0\")          PASS\n");
     } else {
         ok_line(b"[ 6] LookupGroupId(\"0\")          FAIL\n");
