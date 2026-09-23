@@ -640,11 +640,27 @@ fn main_stack_bounds() -> (*mut u8, usize) {
 ///
 /// There is no `/proc` to parse; `pthread_get_stackaddr_np` returns the
 /// stack's *top* and `pthread_get_stacksize_np` its size, so the base is
-/// the difference. The kernel's argv/envp/apple block sits at that top
-/// just as it does on Linux, so the argv cap in `setup_main_g0` applies
-/// unchanged. Checked rather than trusted — the main thread's reported
-/// size has been wrong on some macOS releases — by requiring the
-/// current `sp` to fall inside the range.
+/// the difference. Checked rather than trusted — the main thread's
+/// reported size has been wrong on some macOS releases — by requiring
+/// the current `sp` to fall inside the range.
+///
+/// **The region handed back ends at the current `sp`, not at the top.**
+/// On Linux only the kernel's argv/envp block sits above the entry
+/// rsp, which is what the argv cap in `setup_main_g0` protects. On
+/// macOS there is more above it, and it is live for the whole process:
+/// dyld runs `main` from its own `start` frame on this stack, and dyld4
+/// keeps its runtime state in that frame — among it `RuntimeLocks`,
+/// whose locks `fork()`'s `libSystem_atfork_prepare` and `dladdr` take.
+/// Adopting everything up to argv made the main M's first `mcall`
+/// start g0 frames at the argv cap and shred those objects downward:
+/// `fork()` then faulted on a code address where dyld's lock pointer
+/// had been (`takeDlopenLockBeforeFork`), or aborted with
+/// "os_unfair_lock is corrupt" (`takeLockBeforeFork`), a run-dependent
+/// time into the process. Go takes the same bound: `rt0_go` makes g0's
+/// stack out of the OS stack *below the entry RSP*
+/// (`runtime/asm_arm64.s:133-141`, `stack_hi = RSP`). Everything at or
+/// above this function's `sp` is a live caller frame (`__goish_rt0`,
+/// dyld's `start`) or the argv block, so none of it is g0's to reuse.
 #[cfg(target_os = "macos")]
 fn main_stack_bounds() -> (*mut u8, usize) {
     let (top, size) = unsafe { crate::sys::sys_pthread_stack(crate::sys::sys_pthread_self()) };
@@ -654,7 +670,8 @@ fn main_stack_bounds() -> (*mut u8, usize) {
         syscall::Write(syscall::STDERR, MSG.as_ptr(), MSG.len());
         syscall::Exit(2);
     }
-    ((top - size) as *mut u8, size)
+    let base = top - size;
+    (base as *mut u8, (sp & !0xf) - base)
 }
 
 /// Pointer to the currently-running M's `SpinLock<M>`, read from the
