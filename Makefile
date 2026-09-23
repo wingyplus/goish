@@ -74,7 +74,7 @@ endif
 
 .PHONY: all build e2e e2e-full e2e-build e2e-quick e2e-clean clean help \
         lint lint-new lint-update anchors manifests ifaces split-brain \
-        build-arm64 run-arm64 build-darwin run-darwin
+        build-arm64 run-arm64 build-darwin run-darwin e2e-darwin e2e-darwin-full
 
 help:
 	@echo "goish-v1 make targets:"
@@ -99,6 +99,8 @@ help:
 	@echo "  build-darwin  build the aarch64-apple-darwin allowlist"
 	@echo "                (scripts/darwin_arm64_examples.txt)"
 	@echo "  run-darwin    build-darwin + run each entry natively on macOS"
+	@echo "  e2e-darwin    the Darwin allowlist through the e2e runner (tiered)"
+	@echo "  e2e-darwin-full  e2e-darwin with LOOPS=50"
 	@echo
 	@echo "Knobs (env or make var):"
 	@echo "  LOOPS=N       force uniform iterations per example (disables tiers)"
@@ -203,6 +205,25 @@ run-darwin: build-darwin
 		printf '%-40s' "$$e"; \
 		./target/$(DARWIN_TARGET)/$(PROFILE)/examples/$$e && echo "  [ok]" || echo "  [FAIL]"; \
 	done
+
+# The allowlist through the same runner as `e2e` — tiered loops, per-run
+# timeouts, failure logs in $(ARTIFACTS), a non-zero exit on any failure
+# — where `run-darwin` is a quick one-shot that never fails the build.
+# This is what CI runs on macos-latest. `e2e-darwin-full` is the 50-loop
+# sweep, the M12 weak-memory gate the port plan names.
+e2e-darwin: build-darwin
+	@$(if $(LOOPS),LOOPS=$(LOOPS),) \
+		TIER1=$(TIER1) TIER2=$(TIER2) TIER3=$(TIER3) \
+		TIMEOUT=$(TIMEOUT) \
+		$(if $(FILTER),FILTER='$(FILTER)',) \
+		$(if $(EXCLUDE),EXCLUDE='$(EXCLUDE)',) \
+		ARTIFACTS=$(ARTIFACTS) \
+		TARGET_DIR=target/$(DARWIN_TARGET)/$(PROFILE) \
+		EXAMPLES_FILE=$(DARWIN_ALLOWLIST) \
+		bash scripts/e2e_runner.sh
+
+e2e-darwin-full:
+	@$(MAKE) e2e-darwin LOOPS=50
 
 e2e: e2e-build
 	@$(if $(LOOPS),LOOPS=$(LOOPS),) \
