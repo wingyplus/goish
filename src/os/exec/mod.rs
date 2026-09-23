@@ -848,15 +848,9 @@ fn file_is_accessible(path: &string) -> bool {
     }
     buf.push(0);
     let mut st: syscall::Stat_t = Default::default();
-    let r = unsafe {
-        syscall::syscall4(
-            syscall::SYS_NEWFSTATAT,
-            syscall::AT_FDCWD as usize,
-            buf.as_ptr() as usize,
-            (&mut st as *mut syscall::Stat_t) as usize,
-            0,
-        )
-    };
+    // Through the wrapper, not a raw `newfstatat` number: Darwin has no
+    // raw syscall entry point, and on Linux `Fstatat` is that same call.
+    let r = syscall::Fstatat(syscall::AT_FDCWD, buf.as_ptr(), &mut st, 0);
     if r != 0 || (st.st_mode & syscall::S_IFMT) != syscall::S_IFREG {
         return false;
     }
@@ -954,11 +948,16 @@ impl Cmd {
         }
 
         // ── Build envp ──────────────────────────────────────────────
-        let env_strings: slice<string> = if crate::len(&self.Env) > 0 {
-            self.Env.clone()
-        } else {
-            crate::os::Environ()
-        };
+        // Go: `env, err := c.environ()` (os/exec/exec.go:728-731) — the
+        // same environment `Cmd.Environ` reports, deduplicated, with
+        // `PWD=<abs Dir>` appended when Dir is set and Env is nil. This
+        // used to pass Env or the raw process environment, so the child
+        // never saw PWD: `pwd` with Dir "/tmp" printed "/private/tmp" on
+        // macOS, where /tmp is a symlink, while Go's prints "/tmp".
+        let (env_strings, env_err) = self.environ();
+        if !env_err.IsNil() {
+            return env_err;
+        }
         let mut envp_bufs: Vec<Vec<u8>> = Vec::with_capacity(crate::len(&env_strings) as usize);
         for_each_arg(&env_strings, |s| {
             let mut b = Vec::with_capacity(s.Len() as usize + 1);
@@ -1497,12 +1496,7 @@ fn child_report(fd: i32, rc: i32) {
 }
 
 fn child_die(code: i32) -> ! {
-    unsafe {
-        syscall::syscall1(syscall::SYS_EXIT, code as usize);
-    }
-    loop {
-        core::hint::spin_loop();
-    }
+    syscall::ForkExit(code)
 }
 
 /// Read everything from `fd` into the goish writer. Buffers are 4 KiB.
