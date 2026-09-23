@@ -31,6 +31,7 @@ use goish::string;
 static FAILED: AtomicUsize = AtomicUsize::new(0);
 static SEEN: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(not(target_os = "macos"))]
 static GO: [&str; 10] = [
     "name=exit0 str=\"exit status 0\"",
     "name=exit3 str=\"exit status 3\"",
@@ -42,6 +43,24 @@ static GO: [&str; 10] = [
     "name=stop_sigtrap_fork str=\"stop signal: trace/breakpoint trap (trap 1)\"",
     "name=stop_sigtrap_exec str=\"stop signal: trace/breakpoint trap (trap 4)\"",
     "name=continued str=\"continued\"",
+];
+// darwin/arm64: the same raw status words through Go's darwin
+// ProcessState (goref on darwin/arm64). BSD decodes them differently
+// (syscall/syscall_bsd.go:127-138): signal 19 is SIGCONT there, there
+// is no ptrace event so TrapCause is -1 — which Go still prints, being
+// non-zero — and 0xffff is a stop by "signal 255", not "continued".
+#[cfg(target_os = "macos")]
+static GO: [&str; 10] = [
+    "name=exit0 str=\"exit status 0\"",
+    "name=exit3 str=\"exit status 3\"",
+    "name=exit255 str=\"exit status 255\"",
+    "name=sigkill str=\"signal: killed\"",
+    "name=sigsegv_core str=\"signal: segmentation fault (core dumped)\"",
+    "name=stop_sigstop str=\"stop signal: continued\"",
+    "name=stop_sigtrap_nocause str=\"stop signal: trace/BPT trap (trap -1)\"",
+    "name=stop_sigtrap_fork str=\"stop signal: trace/BPT trap (trap -1)\"",
+    "name=stop_sigtrap_exec str=\"stop signal: trace/BPT trap (trap -1)\"",
+    "name=continued str=\"stop signal: signal 255\"",
 ];
 
 fn chk(got: goish::string) {
