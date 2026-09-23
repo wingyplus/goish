@@ -33,74 +33,73 @@ concurrency:
 
 jobs:
   e2e-race:
-    runs-on: ubuntu-latest
-    # `full` is 225 examples x 50 = ~11k iterations; give it room but stay
-    # under GitHub's 360-minute per-job ceiling.
-    timeout-minutes: 330
+    # Explicit per-entry names keep the pre-matrix check names
+    # (`e2e-race`, `e2e-race-macos`).
+    name: ${{ matrix.check }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      # One platform failing must not cancel the other's signal.
+      fail-fast: false
+      matrix:
+        include:
+          # `full` is 225 examples x 50 = ~11k iterations; give it room
+          # but stay under GitHub's 360-minute per-job ceiling.
+          - check: e2e-race
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            make: e2e
+            make_full: e2e-full
+            timeout: 330
+          # darwin/arm64 allowlist under the same tiers. This is the only
+          # native weak-memory signal in CI: x86's TSO hides every
+          # too-weak `Ordering`, and the port plan's M12 audit is defined
+          # as `e2e-darwin-full` green here. (Until workers land in M7 the
+          # scheduler runs on one M, so the cross-thread orderings it is
+          # waiting to test are not exercised yet.)
+          - check: e2e-race-macos
+            os: macos-latest
+            target: aarch64-apple-darwin
+            make: e2e-darwin
+            make_full: e2e-darwin-full
+            timeout: 120
     steps:
       - uses: actions/checkout@v4
 
+      # The port is aarch64-only (every Darwin cfg names the arch), so an
+      # Intel image would fail to build rather than test anything.
+      - name: Require Apple Silicon
+        if: runner.os == 'macOS'
+        run: test "$(uname -m)" = arm64
+
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+
+      # The runner shells out to `timeout`, which macOS does not ship;
+      # Homebrew's coreutils provides it as `gtimeout`.
+      - name: Install coreutils
+        if: runner.os == 'macOS'
+        run: command -v gtimeout >/dev/null || brew install coreutils
 
       # Default (scheduled) runs are tiered. `full` is the AGENTS.md
       # requirement for scheduler/allocator/runtime-core changes, where
       # races surface in tests that look unrelated to the change — reach
       # for it by hand after touching runtime/.
-      - name: make e2e (tiered)
+      - name: make ${{ matrix.make }} (tiered)
         if: github.event.inputs.mode != 'full'
-        run: make e2e TIMEOUT=30
+        run: make ${{ matrix.make }} TIMEOUT=30
 
-      - name: make e2e-full
+      - name: make ${{ matrix.make_full }}
         if: github.event.inputs.mode == 'full'
-        run: make e2e-full TIMEOUT=30
+        run: make ${{ matrix.make_full }} TIMEOUT=30
 
       - name: Upload failure logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-race-failure-logs
-          path: scripts/.e2e-artifacts
-          if-no-files-found: ignore
-
-  # darwin/arm64 allowlist under the same tiers. This is the only native
-  # weak-memory signal in CI: x86's TSO hides every too-weak `Ordering`,
-  # and the port plan's M12 audit is defined as `e2e-darwin-full` green
-  # here. (Until workers land in M7 the scheduler runs on one M, so the
-  # cross-thread orderings it is waiting to test are not exercised yet.)
-  e2e-race-macos:
-    runs-on: macos-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Require Apple Silicon
-        run: test "$(uname -m)" = arm64
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install coreutils
-        run: command -v gtimeout >/dev/null || brew install coreutils
-
-      - name: make e2e-darwin (tiered)
-        if: github.event.inputs.mode != 'full'
-        run: make e2e-darwin TIMEOUT=30
-
-      - name: make e2e-darwin-full
-        if: github.event.inputs.mode == 'full'
-        run: make e2e-darwin-full TIMEOUT=30
-
-      - name: Upload failure logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-race-macos-failure-logs
+          name: ${{ matrix.check }}-failure-logs
           path: scripts/.e2e-artifacts
           if-no-files-found: ignore

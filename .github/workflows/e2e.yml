@@ -22,65 +22,61 @@ concurrency:
 
 jobs:
   e2e:
-    runs-on: ubuntu-latest
+    # Explicit per-entry names keep the pre-matrix check names (`e2e`,
+    # `e2e-macos`), so nothing keyed on them has to change.
+    name: ${{ matrix.check }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
-
-      - uses: Swatinem/rust-cache@v2
-
-      # LOOPS=1 forces a uniform single run, overriding the per-test
-      # tiers. CI runners are slower than a dev box, so widen the
-      # per-iteration timeout; https_real_smoke already tolerates network
-      # flakes via the runner's NETWORK_FLAKY handling.
-      - name: make e2e LOOPS=1
-        run: make e2e LOOPS=1 TIMEOUT=30
-
-      - name: Upload failure logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-failure-logs
-          path: scripts/.e2e-artifacts
-          if-no-files-found: ignore
-
-  # darwin/arm64 — the port's allowlist (scripts/darwin_arm64_examples.txt),
-  # natively on an Apple Silicon runner. Not every example: most still
-  # stop at a milestone the port has not reached, each with an abort that
-  # names it. The allowlist only grows; a milestone lands by adding to it.
-  e2e-macos:
-    runs-on: macos-latest
-    timeout-minutes: 60
+    strategy:
+      # One platform failing must not cancel the other's signal.
+      fail-fast: false
+      matrix:
+        include:
+          - check: e2e
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            make: e2e
+          # darwin/arm64 — the port's allowlist
+          # (scripts/darwin_arm64_examples.txt), natively on an Apple
+          # Silicon runner. Not every example: most still stop at a
+          # milestone the port has not reached, each with an abort that
+          # names it. The allowlist only grows.
+          - check: e2e-macos
+            os: macos-latest
+            target: aarch64-apple-darwin
+            make: e2e-darwin
     steps:
       - uses: actions/checkout@v4
 
       # The port is aarch64-only (every Darwin cfg names the arch), so an
       # Intel image would fail to build rather than test anything.
       - name: Require Apple Silicon
+        if: runner.os == 'macOS'
         run: test "$(uname -m)" = arm64
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
 
       # The runner shells out to `timeout`, which macOS does not ship;
       # Homebrew's coreutils provides it as `gtimeout`.
       - name: Install coreutils
+        if: runner.os == 'macOS'
         run: command -v gtimeout >/dev/null || brew install coreutils
 
-      - name: make e2e-darwin LOOPS=1
-        run: make e2e-darwin LOOPS=1 TIMEOUT=30
+      # LOOPS=1 forces a uniform single run, overriding the per-test
+      # tiers. CI runners are slower than a dev box, so widen the
+      # per-iteration timeout; https_real_smoke already tolerates network
+      # flakes via the runner's NETWORK_FLAKY handling.
+      - name: make ${{ matrix.make }} LOOPS=1
+        run: make ${{ matrix.make }} LOOPS=1 TIMEOUT=30
 
       - name: Upload failure logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-macos-failure-logs
+          name: ${{ matrix.check }}-failure-logs
           path: scripts/.e2e-artifacts
           if-no-files-found: ignore
