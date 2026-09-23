@@ -776,6 +776,19 @@ pub fn Dup3(oldfd: i32, newfd: i32, flags: i32) -> i32 {
     unsafe { syscall3(SYS_DUP3, oldfd as usize, newfd as usize, flags as usize) as i32 }
 }
 
+/// Leave a forked child that could not exec. `exit(2)` — the thread
+/// exit, which in a freshly forked child is the whole process, since
+/// the child has exactly one thread. A wrapper rather than the raw
+/// `syscall1(SYS_EXIT, …)` `os::exec` used to write, because Darwin
+/// has no raw entry point: its sibling is `_exit(2)` through libSystem.
+#[allow(non_snake_case)]
+pub fn ForkExit(code: i32) -> ! {
+    unsafe {
+        syscall1(SYS_EXIT, code as usize);
+        core::hint::unreachable_unchecked()
+    }
+}
+
 // ─── stat / fstat (Linux x86_64 layout) ──────────────────────────────
 
 
