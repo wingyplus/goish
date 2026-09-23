@@ -48,20 +48,17 @@ jobs:
           - check: e2e-race
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            make: e2e
-            make_full: e2e-full
             timeout: 330
           # darwin/arm64 allowlist under the same tiers. This is the only
           # native weak-memory signal in CI: x86's TSO hides every
           # too-weak `Ordering`, and the port plan's M12 audit is defined
-          # as `e2e-darwin-full` green here. (Until workers land in M7 the
-          # scheduler runs on one M, so the cross-thread orderings it is
-          # waiting to test are not exercised yet.)
+          # as `make e2e-full TARGET=aarch64-apple-darwin` green here.
+          # (Until workers land in M7 the scheduler runs on one M, so the
+          # cross-thread orderings it is waiting to test are not
+          # exercised yet.)
           - check: e2e-race-macos
             os: macos-latest
             target: aarch64-apple-darwin
-            make: e2e-darwin
-            make_full: e2e-darwin-full
             timeout: 120
     steps:
       - uses: actions/checkout@v4
@@ -88,13 +85,15 @@ jobs:
       # requirement for scheduler/allocator/runtime-core changes, where
       # races surface in tests that look unrelated to the change — reach
       # for it by hand after touching runtime/.
-      - name: make ${{ matrix.make }} (tiered)
+      #
+      # The same tasks on both platforms; TARGET picks the example set.
+      - name: make e2e (tiered)
         if: github.event.inputs.mode != 'full'
-        run: make ${{ matrix.make }} TIMEOUT=30
+        run: make e2e TARGET=${{ matrix.target }} TIMEOUT=30
 
-      - name: make ${{ matrix.make_full }}
+      - name: make e2e-full
         if: github.event.inputs.mode == 'full'
-        run: make ${{ matrix.make_full }} TIMEOUT=30
+        run: make e2e-full TARGET=${{ matrix.target }} TIMEOUT=30
 
       - name: Upload failure logs
         if: failure()

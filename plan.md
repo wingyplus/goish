@@ -685,9 +685,13 @@ unchanged**.
 
 - **`Makefile:59`** — add `--target $(TARGET)` to `build`; on Linux this is a no-op since the
   `[build]` pin already puts artifacts there, so it cannot regress. Add `build-darwin`/
-  `e2e-darwin` reading the allowlist.
+  `e2e-darwin` reading the allowlist. **Done, and simpler than written:** there is no
+  `e2e-darwin` — `make e2e TARGET=aarch64-apple-darwin` (and `e2e-full`) builds and runs the
+  allowlist, via `E2E_ALLOWLIST` keyed on TARGET, so every platform runs the same tasks.
 - **`scripts/e2e_runner.sh:30,80`** — take the allowlist as an input filter rather than globbing
-  the examples directory.
+  the examples directory. **Done** as `EXAMPLES_FILE=`; it cannot be a FILTER, since most
+  allowlist entries are auto-discovered examples the runner's Cargo.toml scan never sees. The
+  runner also resolves `timeout`/`gtimeout`, since macOS ships neither.
 - **`scripts/port_coverage.py:38-42`** — `SKIP_FILE` excludes `_arm64.go` **and** `_darwin.go`.
   Do **not** just edit the regex: that makes the denominator jump and the headline coverage
   number drop overnight, becoming uninterpretable exactly when it is most needed. Make it a
@@ -696,6 +700,9 @@ unchanged**.
 - **CI** — `e2e.yml:32` and `e2e-race.yml:45` stay on `ubuntu-latest` + x86_64; that is the green
   baseline and is non-negotiable. Add `e2e-darwin.yml` on `macos-latest` (Apple Silicon) running
   only the allowlist. M12's definition of done is `make e2e-full` (50 loops) green there.
+  **Done as a matrix, not a new file:** `e2e.yml` and `e2e-race.yml` each run one job over
+  `ubuntu-latest`/x86_64 and `macos-latest`/aarch64-apple-darwin, the same `make e2e` /
+  `e2e-full` with only TARGET differing. The Linux entries keep their check names.
 - **Anchors** — write them with file path and symbol, then let `anchor_check.py --fix` /
   `anchor_port.py` populate the line ranges. **Never hand-guess a range**: the checker resolves by
   symbol name and ignores the range, so a wrong range passes tier-2 silently (229 of 1802 were
