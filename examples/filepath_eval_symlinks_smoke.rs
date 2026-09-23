@@ -15,6 +15,13 @@ use goish::os;
 use goish::path::filepath;
 use goish::{string, syscall};
 
+/// Where /tmp really is: a directory on Linux, a symlink to
+/// /private/tmp on macOS.
+#[cfg(not(target_os = "macos"))]
+const REAL_TMP: &str = "/tmp";
+#[cfg(target_os = "macos")]
+const REAL_TMP: &str = "/private/tmp";
+
 #[goish::main]
 fn main() {
     let mut failed = 0;
@@ -26,6 +33,10 @@ fn main() {
     let target = string("/tmp/goish-evalsymlinks-smoke/target.txt");
     let link = string("/tmp/goish-evalsymlinks-smoke/link.txt");
     let _ = os::WriteFile(target.clone(), bytes("hi"), 0o644);
+    // What EvalSymlinks must return for `target`. On macOS /tmp is
+    // itself a symlink to /private/tmp, and Go resolves it too, so the
+    // fully evaluated path carries the /private prefix there.
+    let resolved = string(REAL_TMP) + string("/goish-evalsymlinks-smoke/target.txt");
 
     // 1. Lstat on a symlink reports ModeSymlink.
     {
@@ -53,7 +64,7 @@ fn main() {
     // 3. EvalSymlinks resolves a single absolute symlink.
     {
         let (got, err) = filepath::EvalSymlinks(link.clone());
-        if err.IsNil() && got == target {
+        if err.IsNil() && got == resolved {
             fmt::Println!("[ 3] EvalSymlinks abs link     PASS");
         } else {
             fmt::Println!("[ 3] EvalSymlinks abs link     FAIL got=", got);
@@ -64,7 +75,7 @@ fn main() {
     // 4. EvalSymlinks on a non-link returns Clean(input).
     {
         let (got, err) = filepath::EvalSymlinks(target.clone());
-        if err.IsNil() && got == target {
+        if err.IsNil() && got == resolved {
             fmt::Println!("[ 4] EvalSymlinks no link      PASS");
         } else {
             fmt::Println!("[ 4] EvalSymlinks no link      FAIL got=", got);
@@ -77,7 +88,7 @@ fn main() {
         let rel_link = string("/tmp/goish-evalsymlinks-smoke/rel-link.txt");
         let _ = os::Symlink(string("target.txt"), rel_link.clone());
         let (got, err) = filepath::EvalSymlinks(rel_link);
-        if err.IsNil() && got == target {
+        if err.IsNil() && got == resolved {
             fmt::Println!("[ 5] EvalSymlinks rel link     PASS");
         } else {
             fmt::Println!("[ 5] EvalSymlinks rel link     FAIL got=", got);
@@ -92,7 +103,7 @@ fn main() {
         let _ = os::Symlink(target.clone(), chain1.clone());
         let _ = os::Symlink(chain1.clone(), chain2.clone());
         let (got, err) = filepath::EvalSymlinks(chain2);
-        if err.IsNil() && got == target {
+        if err.IsNil() && got == resolved {
             fmt::Println!("[ 6] EvalSymlinks chain        PASS");
         } else {
             fmt::Println!("[ 6] EvalSymlinks chain        FAIL got=", got);
@@ -104,7 +115,7 @@ fn main() {
     {
         let p = string("/tmp/goish-evalsymlinks-smoke/./target.txt");
         let (got, err) = filepath::EvalSymlinks(p);
-        if err.IsNil() && got == target {
+        if err.IsNil() && got == resolved {
             fmt::Println!("[ 7] EvalSymlinks dot          PASS");
         } else {
             fmt::Println!("[ 7] EvalSymlinks dot          FAIL got=", got);
@@ -118,7 +129,7 @@ fn main() {
         // Need /sub to exist for the walk to traverse it.
         let _ = os::Mkdir(string("/tmp/goish-evalsymlinks-smoke/sub"), 0o755);
         let (got, err) = filepath::EvalSymlinks(p);
-        if err.IsNil() && got == target {
+        if err.IsNil() && got == resolved {
             fmt::Println!("[ 8] EvalSymlinks dotdot       PASS");
         } else {
             fmt::Println!("[ 8] EvalSymlinks dotdot       FAIL got=", got);

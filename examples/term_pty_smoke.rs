@@ -33,9 +33,10 @@ fn check(cond: bool, msg: &[u8]) {
 }
 
 const O_RDWR: i32 = 0o2;
-const O_NOCTTY: i32 = 0o400;
+const O_NOCTTY: i32 = syscall::O_NOCTTY;
 
 /// Open a master/slave PTY pair. Returns (master_fd, slave_fd).
+#[cfg(target_os = "linux")]
 fn open_pty() -> (i32, i32) {
     let master = syscall::Open(b"/dev/ptmx\0".as_ptr(), O_RDWR | O_NOCTTY, 0);
     check(master >= 0, b"term_pty: open /dev/ptmx failed\n");
@@ -78,6 +79,28 @@ fn open_pty() -> (i32, i32) {
     path[i] = 0;
 
     let slave = syscall::Open(path.as_ptr(), O_RDWR | O_NOCTTY, 0);
+    check(slave >= 0, b"term_pty: open slave failed\n");
+    (master, slave)
+}
+
+/// Darwin: the same pair through the BSD pty ioctls — grant, unlock,
+/// then ask the master for the slave's *name* (TIOCPTYGNAME fills a
+/// 128-byte buffer), which is how `grantpt`/`unlockpt`/`ptsname` are
+/// built there and what creack/pty's pty_darwin.go calls. Request
+/// numbers measured against <sys/ttycom.h>.
+#[cfg(target_os = "macos")]
+fn open_pty() -> (i32, i32) {
+    const TIOCPTYGRANT: usize = 0x20007454;
+    const TIOCPTYUNLK: usize = 0x20007452;
+    const TIOCPTYGNAME: usize = 0x40807453;
+    let master = syscall::Open(b"/dev/ptmx\0".as_ptr(), O_RDWR | O_NOCTTY, 0);
+    check(master >= 0, b"term_pty: open /dev/ptmx failed\n");
+    check(syscall::Ioctl(master, TIOCPTYGRANT, 0) == 0, b"term_pty: TIOCPTYGRANT failed\n");
+    check(syscall::Ioctl(master, TIOCPTYUNLK, 0) == 0, b"term_pty: TIOCPTYUNLK failed\n");
+    let mut name = [0u8; 128];
+    let r = syscall::Ioctl(master, TIOCPTYGNAME, name.as_mut_ptr() as usize);
+    check(r == 0 && name[0] != 0, b"term_pty: TIOCPTYGNAME failed\n");
+    let slave = syscall::Open(name.as_ptr(), O_RDWR | O_NOCTTY, 0);
     check(slave >= 0, b"term_pty: open slave failed\n");
     (master, slave)
 }

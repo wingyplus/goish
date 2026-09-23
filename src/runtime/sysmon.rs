@@ -428,10 +428,23 @@ fn check_force_preempt(now: i64) {
         // Set preempt flag for cooperative-side rescue (M18b-γ).
         g_ref.preempt.store(true, Ordering::Release);
         // Send SIGURG to the M's thread.
-        let tid = m.procid.load(Ordering::Acquire);
-        if tid > 0 {
-            SYSMON_FORCE_PREEMPTS.fetch_add(1, Ordering::Relaxed);
-            syscall::Tgkill(pid, tid, syscall::SIGURG);
+        #[cfg(target_os = "linux")]
+        {
+            let tid = m.procid.load(Ordering::Acquire);
+            if tid > 0 {
+                SYSMON_FORCE_PREEMPTS.fetch_add(1, Ordering::Relaxed);
+                syscall::Tgkill(pid, tid, syscall::SIGURG);
+            }
+        }
+        // Darwin signals a thread by its pthread_t (Go's signalM).
+        #[cfg(target_os = "macos")]
+        {
+            let _ = pid;
+            let t = storage.pthread.load(Ordering::Acquire);
+            if t != 0 {
+                SYSMON_FORCE_PREEMPTS.fetch_add(1, Ordering::Relaxed);
+                syscall::PthreadKill(t, syscall::SIGURG);
+            }
         }
     });
 }

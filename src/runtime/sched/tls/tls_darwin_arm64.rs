@@ -43,11 +43,14 @@
 //
 // **That block does not exist yet.** Today these are ordinary `#[inline]`
 // functions, and in a debug build `acquirem` reaches `locks_inc` — and
-// `locks_inc` reaches `AtomicU32::fetch_add` — by `bl` into regular
-// `__text` (measured with `objdump` on `defer_smoke`). linux/arm64 has
-// the same gap. amd64 does not need the block: its RMW is one
-// `fs`-relative instruction, correct wherever it is placed. Nothing
-// preempts asynchronously on arm64 until M8, so this is M8's to close.
+// `locks_inc` reached `AtomicU32::fetch_add` — by `bl` into regular
+// `__text` (measured with `objdump` on `defer_smoke`). M8 closed it on
+// this target: `locks_inc`/`locks_dec` are `inline(always)` with an
+// inline `ldaddal`, so the sequence lives inside `acquirem`/`releasem`'s
+// `goish_rt_text` bodies, where the SIGURG handler does not inject.
+// linux/arm64 still has the gap, and does not arm the handler. amd64
+// does not need any of this: its RMW is one `fs`-relative instruction,
+// correct wherever it is placed.
 //
 // ─── The cost, the same as linux/arm64 ─────────────────────────────────
 //
@@ -66,7 +69,7 @@
 // anything takes a `SpinLock` — until then `acquirem` would find a zero
 // slot. That lands with the worker Ms, in M5.
 
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::sys;
 
@@ -194,17 +197,40 @@ pub unsafe fn set_base(b: usize) -> isize {
 
 /// `locks += 1` on the calling thread's own `MStorage`. Three steps —
 /// see the file header.
-#[inline]
+#[inline(always)]
 pub unsafe fn locks_inc<const OFF: usize>() {
-    let p = (*slot() + OFF) as *mut u32;
-    AtomicU32::from_ptr(p).fetch_add(1, Ordering::SeqCst);
+    // `inline(always)` and an inline `ldadd`, not `AtomicU32::fetch_add`:
+    // in a debug build the latter is a call into libcore, outside
+    // `goish_rt_text`, and a SIGURG landing there — after this M's
+    // address is computed, before the add — would migrate the G and
+    // apply the add to the M it left. Inlined, the whole sequence sits
+    // inside `acquirem`'s rt_text body, which the preempt handler
+    // refuses to interrupt. LSE (`ldadd`) is baseline on every Apple
+    // arm64 CPU.
+    let p = *slot() + OFF;
+    core::arch::asm!(
+        "ldaddal {one:w}, {old:w}, [{p}]",
+        one = in(reg) 1u32,
+        old = out(reg) _,
+        p = in(reg) p,
+        options(nostack),
+    );
 }
 
 /// `locks -= 1`, returning the pre-decrement value.
-#[inline]
+#[inline(always)]
 pub unsafe fn locks_dec<const OFF: usize>() -> u32 {
-    let p = (*slot() + OFF) as *mut u32;
-    AtomicU32::from_ptr(p).fetch_sub(1, Ordering::SeqCst)
+    // See `locks_inc`: the add must not leave `goish_rt_text`.
+    let p = *slot() + OFF;
+    let old: u32;
+    core::arch::asm!(
+        "ldaddal {minus:w}, {old:w}, [{p}]",
+        minus = in(reg) u32::MAX,
+        old = out(reg) old,
+        p = in(reg) p,
+        options(nostack),
+    );
+    old
 }
 
 // ─── the two AAPCS64 register reads ────────────────────────────────────

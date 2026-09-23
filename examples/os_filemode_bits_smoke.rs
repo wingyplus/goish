@@ -42,6 +42,7 @@ use goish::io::fs;
 use goish::os;
 use goish::types::int;
 
+#[cfg(not(target_os = "macos"))]
 const GO: [&str; 7] = [
     "plain      asked=-rw-r--r-- got=-rw-r--r-- perm=0644 setuid=false setgid=false sticky=false err=<nil>",
     "setuid     asked=urwxr-xr-x got=urwxr-xr-x perm=0755 setuid=true setgid=false sticky=false err=<nil>",
@@ -50,6 +51,20 @@ const GO: [&str; 7] = [
     "all-three  asked=ugtrwx------ got=ugtrwx------ perm=0700 setuid=true setgid=true sticky=true err=<nil>",
     "mkdir-sticky   perm=0777 sticky=true err=<nil>",
     "openfile-setgid perm=0640 setgid=true err=<nil>",
+];
+// darwin/arm64: the two creation rows run by Go on darwin/arm64. The
+// sticky bit survives because Go (and goish) set it after mkdir on the
+// BSDs; setgid does not, because the Darwin kernel drops S_ISGID from a
+// created file's mode. Chmod, in the first five rows, sets both.
+#[cfg(target_os = "macos")]
+const GO: [&str; 7] = [
+    "plain      asked=-rw-r--r-- got=-rw-r--r-- perm=0644 setuid=false setgid=false sticky=false err=<nil>",
+    "setuid     asked=urwxr-xr-x got=urwxr-xr-x perm=0755 setuid=true setgid=false sticky=false err=<nil>",
+    "setgid     asked=grwxr-xr-x got=grwxr-xr-x perm=0755 setuid=false setgid=true sticky=false err=<nil>",
+    "sticky     asked=trwxrwxrwx got=trwxrwxrwx perm=0777 setuid=false setgid=false sticky=true err=<nil>",
+    "all-three  asked=ugtrwx------ got=ugtrwx------ perm=0700 setuid=true setgid=true sticky=true err=<nil>",
+    "mkdir-sticky   perm=0777 sticky=true err=<nil>",
+    "openfile-setgid perm=0640 setgid=false err=<nil>",
 ];
 
 fn chk(ln: &mut usize, got: &string) {

@@ -572,6 +572,18 @@ pub fn OpenFile<N: Into<string>, M: Into<FileMode>>(
     let name: string = name.into();
     let perm: FileMode = perm.into();
     // Build a NUL-terminated path for the kernel.
+    // Go: on the BSDs a created file does not take the sticky bit from
+    // its mode; remember to set it after (os/file_unix.go:247-252).
+    let mut setSticky = false;
+    if !supportsCreateWithStickyBit
+        && (flag & O_CREATE) != 0
+        && (perm & ModeSticky) != FileMode(0)
+    {
+        let (_, err) = Stat(name.clone());
+        if IsNotExist(err) {
+            setSticky = true;
+        }
+    }
     let mut buf: Vec<u8> = Vec::with_capacity(name.Len() as usize + 1);
     let nb = bytes_of(&name);
     buf.extend_from_slice(nb);
@@ -599,6 +611,10 @@ pub fn OpenFile<N: Into<string>, M: Into<FileMode>>(
                 Err: syscall::Errno(-fd).into(),
             }),
         );
+    }
+    // Go: os/file_unix.go:269-271.
+    if setSticky {
+        let _ = setStickyBit(name.clone());
     }
     (
         nilable::new(File {
@@ -1804,7 +1820,33 @@ pub fn Mkdir<N: Into<string>, M: Into<FileMode>>(name: N, perm: M) -> error {
             Err: syscall::Errno(-rc).into(),
         });
     }
+    // Go: mkdir(2) itself won't handle the sticky bit on *BSD and
+    // Solaris, so set it afterwards (os/file.go:337-345).
+    if !supportsCreateWithStickyBit && (perm & ModeSticky) != FileMode(0) {
+        let e = setStickyBit(name.clone());
+        if !e.IsNil() {
+            let _ = Remove(name);
+            return e;
+        }
+    }
     nil
+}
+
+// go: sdk 1.25.5 os/sticky_bsd.go:11 supportsCreateWithStickyBit
+/// Whether creating a file or directory honours the sticky bit in its
+/// mode. False on the BSDs, macOS included (os/sticky_bsd.go).
+#[cfg(target_os = "macos")]
+const supportsCreateWithStickyBit: bool = false;
+#[cfg(not(target_os = "macos"))]
+const supportsCreateWithStickyBit: bool = true;
+
+// go: sdk 1.25.5 os/file.go:351-357 setStickyBit
+fn setStickyBit(name: string) -> error {
+    let (fi, err) = Stat(name.clone());
+    if !err.IsNil() {
+        return err;
+    }
+    Chmod(name, fi.Mode() | ModeSticky)
 }
 
 #[path = "path.rs"]

@@ -41,7 +41,6 @@
 //
 // Skipped, each with the milestone that turns it on:
 //
-//   `preempt::install`    M8
 //   `segv::install`       M6
 //
 // `symbolize::init` runs, just before the hand-off to `main` as on
@@ -116,17 +115,16 @@ pub extern "C" fn __goish_rt0(
     }
     sched::bootstrap_workers(nprocs);
 
-    // Sysmon's force-preempt scan signals a long-running M with SIGURG,
-    // and nothing handles SIGURG until M8 installs the handler. Timers
-    // and signal dispatch do not depend on it, so sysmon runs; the
-    // cooperative `preempt` flag it also sets stays in effect.
-    flags::ASYNC_PREEMPT.store(false, core::sync::atomic::Ordering::Relaxed);
     crate::runtime::sysmon::start_sysmon();
 
     // SIGPIPE ignored and Go's catch-and-drop set handled, as on Linux
     // (M6). Signal handlers here are libc `sigaction` handlers entered
     // through libSystem's `_sigtramp`.
     crate::runtime::signal::install_boot_handlers();
+
+    // SIGURG async preemption (M8): the arm64 trampoline, with the
+    // SIGTRAP half that resumes it — see `preempt_asm_arm64.rs`.
+    crate::runtime::preempt::install();
 
     // The symboliser, at the Linux boot's position: after the allocator
     // (it builds Vecs) and before any user code can call

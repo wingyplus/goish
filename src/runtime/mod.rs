@@ -36,6 +36,7 @@ mod preempt_asm_amd64;
 #[cfg(target_arch = "aarch64")]
 mod preempt_asm_arm64;
 pub mod rand;
+pub(crate) mod sigctx;
 // The staged darwin/arm64 boot. A separate function under the same
 // `__goish_rt0` symbol rather than a third `#[cfg]` arm inside the one
 // below — see the file header.

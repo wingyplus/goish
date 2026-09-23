@@ -1427,3 +1427,14 @@ pub fn NetpollWakeTrigger(kq: i32) -> i32 {
 /// Go's `kqIdent`: any value works, one that stands out in a trace is
 /// better.
 const NETPOLL_WAKE_IDENT: usize = 0xee1eb9f4;
+
+// ─── M8: thread-directed signals ───────────────────────────────────────
+
+/// `pthread_kill(thread, sig)` — Darwin's way to signal one thread
+/// (Go's darwin `signalM`, runtime/os_darwin.go). `Tgkill` has no
+/// equivalent here: a Mach thread id cannot be signalled, a `pthread_t`
+/// can. Returns 0 or `-errno`.
+#[allow(non_snake_case)]
+pub fn PthreadKill(thread: usize, sig: i32) -> isize {
+    unsafe { sys::sys_pthread_kill(thread, sig) }
+}

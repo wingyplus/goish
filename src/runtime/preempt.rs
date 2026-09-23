@@ -114,6 +114,7 @@ pub const REG_EFL: usize = 17;
 // compiler safe-point metadata. Preserve the vector state the OS enables.
 // x87, SSE, AVX, AVX-512 opmasks/ZMM: AMX and unrelated state such as PKRU
 // require a separate runtime contract and are intentionally not claimed here.
+#[cfg(target_arch = "x86_64")]
 const SIMD_XFEATURES: u64 = 0xe7;
 pub(super) static FP_STATE_MASK: AtomicU64 = AtomicU64::new(0); // zero selects FXSAVE
 pub(super) static FP_STATE_SIZE: AtomicUsize = AtomicUsize::new(512);
@@ -406,7 +407,7 @@ pub(super) extern "C" fn goish_async_preempt2() {
 //   - heap allocation
 //   - any `gopark` / `swap_context` (handler is *not* the trampoline)
 
-extern "C" fn goish_preempt_sigtramp(_sig: i32, _info: *const u8, ctx: *mut UcontextT) {
+extern "C" fn goish_preempt_sigtramp(_sig: i32, _info: *const u8, ctx: *mut u8) {
     PREEMPT_INVOCATIONS.fetch_add(1, Ordering::Relaxed);
 
     // 1. m.locks == 0
@@ -415,7 +416,7 @@ extern "C" fn goish_preempt_sigtramp(_sig: i32, _info: *const u8, ctx: *mut Ucon
         return;
     }
 
-    let pc = unsafe { (*ctx).uc_mcontext.gregs[REG_RIP] };
+    let pc = unsafe { crate::runtime::sigctx::pc(ctx) };
 
     // 2. PC ∉ trampoline range AND PC ∉ {swap_context, gogo,
     // mcall_asm} range. All of these are runtime asm windows where
@@ -475,7 +476,7 @@ extern "C" fn goish_preempt_sigtramp(_sig: i32, _info: *const u8, ctx: *mut Ucon
     }
 
     // 6. Reserve the detected FP image, alignment, and scheduler call headroom.
-    let sp = unsafe { (*ctx).uc_mcontext.gregs[REG_RSP] } as usize;
+    let sp = unsafe { crate::runtime::sigctx::sp(ctx) } as usize;
     let stack_lo = g_ref.stack.base();
     let stack_hi = g_ref.stack.top();
     if sp < stack_lo || sp - stack_lo < async_preempt_stack() || sp >= stack_hi {
@@ -510,10 +511,29 @@ extern "C" fn goish_preempt_sigtramp(_sig: i32, _info: *const u8, ctx: *mut Ucon
     // RSP is shifted down by 8 so the trampoline's prologue offsets
     // (`sub rsp, 128; sub rsp, 8; push rbp; …`) land at the same
     // physical addresses they did under the δ.2 layout.
+    #[cfg(target_arch = "x86_64")]
     unsafe {
+        let ctx = ctx as *mut UcontextT;
         ((sp - 144) as *mut u64).write(pc);
         (*ctx).uc_mcontext.gregs[REG_RSP] = (sp - 8) as u64;
         (*ctx).uc_mcontext.gregs[REG_RIP] = goish_async_preempt as *const () as u64;
+    }
+    // arm64 (darwin): Go's `pushCall` (runtime/signal_arm64.go), with
+    // the frame below Apple's 128-byte red zone, and the original sp
+    // and lr kept beside the resume PC for the restorer — see the
+    // frame diagram in `preempt_asm_arm64.rs`. lr becomes the resume PC
+    // so the injected call looks like one to an unwinder.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    unsafe {
+        use crate::runtime::sigctx;
+        let lr = sigctx::lr(ctx);
+        let s = (sp - 128 - 32) & !15;
+        (s as *mut u64).write(lr);
+        ((s + 8) as *mut u64).write(sp as u64);
+        ((s + 16) as *mut u64).write(pc);
+        sigctx::set_sp(ctx, s as u64);
+        sigctx::set_lr(ctx, pc);
+        sigctx::set_pc(ctx, goish_async_preempt as *const () as u64);
     }
 
     // Clear the cooperative-preempt flag (M18b-β/γ): we're about to
@@ -538,8 +558,51 @@ extern "C" fn goish_preempt_sigtramp(_sig: i32, _info: *const u8, ctx: *mut Ucon
 /// can reach `ucontext`. SA_RESTORER + the existing
 /// `SigreturnTrampoline` complete the kernel's mandated sigreturn
 /// path.
+/// darwin/arm64: the resume half of an async preemption. The trampoline
+/// ends in `brk` at `goish_async_preempt_restore`; the SIGTRAP it raises
+/// lands here on whichever thread now runs the G, and the saved register
+/// file is written back into the signal context for sigreturn to
+/// restore. Any other SIGTRAP is not ours: the default action is put
+/// back and the faulting instruction re-executes into it.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+extern "C" fn goish_preempt_restore(_sig: i32, _info: *const u8, ctx: *mut u8) {
+    use crate::runtime::sigctx;
+    extern "C" {
+        fn goish_async_preempt_restore();
+    }
+    let pc = unsafe { sigctx::pc(ctx) };
+    if pc != goish_async_preempt_restore as *const () as u64 {
+        let dfl = syscall::Sigaction { sa_handler: 0, sa_flags: 0, sa_restorer: 0, sa_mask: 0 };
+        unsafe {
+            let _ = syscall::RtSigaction(syscall::SIGTRAP, &dfl, core::ptr::null_mut());
+        }
+        return;
+    }
+    unsafe {
+        // sp is the frame record the trampoline pushed; the save area
+        // sits above it, and the handler-written block above that.
+        let area = (sigctx::sp(ctx) + 16) as *const u8;
+        let top = area.add(super::preempt_asm_arm64::SAVE_AREA) as *const u64;
+        sigctx::restore_preempt_frame(ctx, area, *top, *top.add(1), *top.add(2));
+    }
+}
+
 pub fn install() {
     initialize_fp_state();
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    unsafe {
+        let sa = syscall::Sigaction {
+            sa_handler: goish_preempt_restore as *const () as usize,
+            sa_flags: syscall::SA_SIGINFO | syscall::SA_ONSTACK,
+            sa_restorer: 0,
+            sa_mask: 0,
+        };
+        if syscall::RtSigaction(syscall::SIGTRAP, &sa, core::ptr::null_mut()) != 0 {
+            const MSG: &[u8] = b"goish: preempt: sigaction(SIGTRAP) failed\n";
+            syscall::Write(syscall::STDERR, MSG.as_ptr(), MSG.len());
+            syscall::Exit(2);
+        }
+    }
     // `SA_ONSTACK`: every M has registered a per-thread alt signal
     // stack via `sigaltstack(2)` at startup
     // (`runtime::sched::m::install_signal_stack`). With this flag,
