@@ -1479,7 +1479,7 @@ fn write_interim_100(fd: i32) {
             continue;
         }
         let errno = -(r as i32);
-        if errno == 11 || errno == 4 {
+        if errno == crate::syscall::EAGAIN.0 || errno == crate::syscall::EINTR.0 {
             // EAGAIN / EINTR — tiny write, yield and retry.
             crate::runtime::sched::Gosched();
             continue;

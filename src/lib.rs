@@ -391,37 +391,35 @@ pub mod __select_spin {
     pub use crate::runtime::spin::{raw_lock, raw_unlock};
 }
 
-/// Darwin: no `.init_array`, and no walk. **This is a real gap, not a
-/// portability detail** — every `goish::import! { … }` block's port
-/// `init()` silently does not run on this target, so a port that
-/// registers a codec, a hash or an interface impl at init time will
-/// behave as though the registration never happened rather than
-/// failing to link.
+/// Darwin: run every `goish::import!` dispatcher, in link order.
 ///
-/// Two Mach-O facts make the ELF mechanism unavailable, and only the
-/// first is about the section name:
-///
-///   * `.init_array` is not a well-formed Mach-O section specifier
-///     (Mach-O wants `"__SEGMENT,__section"`), and
-///   * ld64 emits no `__init_array_start` / `__init_array_end` bound
-///     symbols to walk between. That convention is System V's rule for
-///     section names that are valid C identifiers and has no Mach-O
-///     counterpart.
-///
-/// M10 supplies the real version: a private section walked explicitly
-/// via `getsectiondata(&_mh_execute_header, …)`.
+/// Mach-O has no `.init_array` convention to borrow and ld64 defines
+/// no `__init_array_*` bounds, so the macro places its pointers in a
+/// private `__DATA,__goish_init` section instead and this walks it
+/// between ld64's `section$start`/`section$end` symbols (M10).
 ///
 /// **`__DATA,__mod_init_func` is the wrong answer and is worth naming
 /// so it is not reached for.** dyld runs those before `main` — before
 /// `goish::init()` and before the allocator is online — so a port
 /// `init()` that allocates would fault before goish had booted.
-///
-/// Until M10, every example using `goish::import!` must stay off the
-/// Darwin allowlist. The failure mode is missing initialisation, not a
-/// link error, which is exactly why it is written down here.
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
-pub fn __run_pkg_inits() {}
+pub fn __run_pkg_inits() {
+    extern "C" {
+        #[link_name = "\x01section$start$__DATA$__goish_init"]
+        static __goish_init_start: extern "C" fn();
+        #[link_name = "\x01section$end$__DATA$__goish_init"]
+        static __goish_init_end: extern "C" fn();
+    }
+    unsafe {
+        let mut p = &__goish_init_start as *const extern "C" fn();
+        let end = &__goish_init_end as *const extern "C" fn();
+        while p < end {
+            (*p)();
+            p = p.add(1);
+        }
+    }
+}
 
 #[cfg(not(target_os = "macos"))]
 #[doc(hidden)]

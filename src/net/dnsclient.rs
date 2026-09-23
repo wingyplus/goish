@@ -307,33 +307,18 @@ fn dns_packet_round_trip(
 
     // Set receive timeout
     let tv: [i64; 2] = [timeout_secs as i64, 0];
-    unsafe {
-        syscall::syscall6(
-            syscall::SYS_SETSOCKOPT,
-            fd as usize,
-            1,
-            20,
-            tv.as_ptr() as usize,
-            16,
-            0,
-        );
-    }
+    let _ = syscall::Setsockopt(fd, syscall::SOL_SOCKET, syscall::SO_RCVTIMEO, tv.as_ptr() as *const u8, 16);
 
-    let sent = unsafe {
-        syscall::syscall6(
-            syscall::SYS_SENDTO,
-            fd as usize,
-            udp_req.as_ptr() as usize,
-            udp_req.len(),
-            0,
-            ns_addr as *const syscall::SockaddrIn as usize,
-            core::mem::size_of::<syscall::SockaddrIn>(),
-        )
-    };
+    let sent = syscall::Sendto(
+        fd,
+        udp_req.as_ptr(),
+        udp_req.len(),
+        0,
+        ns_addr as *const syscall::SockaddrIn as *const u8,
+        core::mem::size_of::<syscall::SockaddrIn>() as u32,
+    );
     if sent < 0 {
-        unsafe {
-            syscall::syscall1(syscall::SYS_CLOSE, fd as usize);
-        }
+        let _ = syscall::Close(fd);
         return (
             dns::Parser::new(),
             dns::Header::default(),
@@ -343,24 +328,12 @@ fn dns_packet_round_trip(
 
     let mut buf = vec![0u8; MAX_DNS_PACKET_SIZE];
     loop {
-        let n = unsafe {
-            syscall::syscall6(
-                syscall::SYS_RECVFROM,
-                fd as usize,
-                buf.as_mut_ptr() as usize,
-                buf.len(),
-                0,
-                0,
-                0,
-            )
-        };
-        if n == -4 {
+        let n = syscall::Recvfrom(fd, buf.as_mut_ptr(), buf.len(), 0);
+        if n == -(syscall::EINTR.0 as isize) {
             continue;
         } // EINTR — Go auto-retries
         if n < 0 {
-            unsafe {
-                syscall::syscall1(syscall::SYS_CLOSE, fd as usize);
-            }
+            let _ = syscall::Close(fd);
             return (
                 dns::Parser::new(),
                 dns::Header::default(),
@@ -380,9 +353,7 @@ fn dns_packet_round_trip(
         if !check_response(id, query, &h, &q) {
             continue;
         }
-        unsafe {
-            syscall::syscall1(syscall::SYS_CLOSE, fd as usize);
-        }
+        let _ = syscall::Close(fd);
         return (p, h, errors::nil);
     }
 }
@@ -393,15 +364,8 @@ fn tcp_read_exact_n(fd: i32, buf: &mut Vec<u8>, n: usize) -> bool {
     buf.resize(start + n, 0u8);
     let mut off = 0usize;
     while off < n {
-        let r = unsafe {
-            syscall::syscall3(
-                syscall::SYS_READ,
-                fd as usize,
-                buf.as_mut_ptr() as usize + start + off,
-                n - off,
-            ) as isize
-        };
-        if r == -4 {
+        let r = syscall::Read(fd, unsafe { buf.as_mut_ptr().add(start + off) }, n - off);
+        if r == -(syscall::EINTR.0 as isize) {
             continue;
         } // EINTR — Go auto-retries
         if r <= 0 {
@@ -434,26 +398,8 @@ fn dns_stream_round_trip(
     }
 
     let tv: [i64; 2] = [timeout_secs as i64, 0];
-    unsafe {
-        syscall::syscall6(
-            syscall::SYS_SETSOCKOPT,
-            fd as usize,
-            1,
-            20,
-            tv.as_ptr() as usize,
-            16,
-            0,
-        );
-        syscall::syscall6(
-            syscall::SYS_SETSOCKOPT,
-            fd as usize,
-            1,
-            21,
-            tv.as_ptr() as usize,
-            16,
-            0,
-        );
-    }
+    let _ = syscall::Setsockopt(fd, syscall::SOL_SOCKET, syscall::SO_RCVTIMEO, tv.as_ptr() as *const u8, 16);
+    let _ = syscall::Setsockopt(fd, syscall::SOL_SOCKET, syscall::SO_SNDTIMEO, tv.as_ptr() as *const u8, 16);
 
     let cr = syscall::Connect(
         fd,
@@ -461,9 +407,7 @@ fn dns_stream_round_trip(
         core::mem::size_of::<syscall::SockaddrIn>() as u32,
     );
     if cr < 0 {
-        unsafe {
-            syscall::syscall1(syscall::SYS_CLOSE, fd as usize);
-        }
+        let _ = syscall::Close(fd);
         return (
             dns::Parser::new(),
             dns::Header::default(),
@@ -471,18 +415,9 @@ fn dns_stream_round_trip(
         );
     }
 
-    let wn = unsafe {
-        syscall::syscall3(
-            syscall::SYS_WRITE,
-            fd as usize,
-            tcp_req.as_ptr() as usize,
-            tcp_req.len(),
-        ) as isize
-    };
+    let wn = syscall::Write(fd, tcp_req.as_ptr(), tcp_req.len());
     if wn < 0 || (wn as usize) < tcp_req.len() {
-        unsafe {
-            syscall::syscall1(syscall::SYS_CLOSE, fd as usize);
-        }
+        let _ = syscall::Close(fd);
         return (
             dns::Parser::new(),
             dns::Header::default(),
@@ -490,19 +425,12 @@ fn dns_stream_round_trip(
         );
     }
 
-    // Read 2-byte length prefix. Per Go runtime, retry on EINTR (-4).
+    // Read 2-byte length prefix. Per Go runtime, retry on EINTR.
     let mut lenbuf = [0u8; 2];
     let mut loff = 0usize;
     while loff < 2 {
-        let r = unsafe {
-            syscall::syscall3(
-                syscall::SYS_READ,
-                fd as usize,
-                lenbuf.as_mut_ptr() as usize + loff,
-                2 - loff,
-            ) as isize
-        };
-        if r == -4 {
+        let r = syscall::Read(fd, unsafe { lenbuf.as_mut_ptr().add(loff) }, 2 - loff);
+        if r == -(syscall::EINTR.0 as isize) {
             continue;
         } // EINTR — Go auto-retries
         if r <= 0 {
@@ -513,9 +441,7 @@ fn dns_stream_round_trip(
                     + crate::gostring::string::from_static(" loff=")
                     + crate::strconv::Itoa(loff as i64)
             );
-            unsafe {
-                syscall::syscall1(syscall::SYS_CLOSE, fd as usize);
-            }
+            let _ = syscall::Close(fd);
             return (
                 dns::Parser::new(),
                 dns::Header::default(),
@@ -530,21 +456,12 @@ fn dns_stream_round_trip(
     rbuf.resize(rlen, 0u8);
     let mut roff = 0usize;
     while roff < rlen {
-        let r = unsafe {
-            syscall::syscall3(
-                syscall::SYS_READ,
-                fd as usize,
-                rbuf.as_mut_ptr() as usize + roff,
-                rlen - roff,
-            ) as isize
-        };
-        if r == -4 {
+        let r = syscall::Read(fd, unsafe { rbuf.as_mut_ptr().add(roff) }, rlen - roff);
+        if r == -(syscall::EINTR.0 as isize) {
             continue;
         } // EINTR — Go auto-retries
         if r <= 0 {
-            unsafe {
-                syscall::syscall1(syscall::SYS_CLOSE, fd as usize);
-            }
+            let _ = syscall::Close(fd);
             return (
                 dns::Parser::new(),
                 dns::Header::default(),
@@ -553,9 +470,7 @@ fn dns_stream_round_trip(
         }
         roff += r as usize;
     }
-    unsafe {
-        syscall::syscall1(syscall::SYS_CLOSE, fd as usize);
-    }
+    let _ = syscall::Close(fd);
 
     let mut p = dns::Parser::new();
     let (h, e) = p.Start(rbuf);

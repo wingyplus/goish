@@ -1910,8 +1910,6 @@ fn spawn_worker_m(id: u32) -> i64 {
         syscall::Write(syscall::STDERR, MSG.as_ptr(), MSG.len());
         syscall::Exit(2);
     }
-    let stack_top = unsafe { stack_base.add(WORKER_M_STACK) };
-
     // M17b-ε.α: allocate this worker's `g0` BEFORE clone(2). The
     // mmap'd 64 KiB region we just got is the OS thread stack — i.e.,
     // exactly what `g0.stack` adopts. Storing the pointer in
@@ -1925,13 +1923,36 @@ fn spawn_worker_m(id: u32) -> i64 {
     let g0_ptr: *mut super::g::G = alloc::boxed::Box::leak(g0_box) as *mut _;
     storage.g0.store(g0_ptr, Ordering::Release);
 
+    start_os_thread(storage, stack_base, WORKER_M_STACK, mstart)
+}
+
+/// Start the OS thread behind `storage`, running `entry` on the stack
+/// `[stack_base, stack_base + size)` with its thread pointer already
+/// set to `storage`. Returns the new thread's id (Linux: the kernel
+/// tid; Darwin: 0 or more on success, since the `pthread_t` is stored
+/// in `storage.pthread` instead), or `-errno`.
+pub fn start_os_thread(
+    storage: &'static super::m::MStorage,
+    stack_base: *mut u8,
+    size: usize,
+    entry: extern "C" fn() -> !,
+) -> i64 {
+    #[cfg(target_os = "linux")]
     unsafe {
-        syscall::Clone(
-            syscall::CLONE_THREAD_FLAGS,
-            stack_top,
-            mstart,
+        crate::syscall::Clone(
+            crate::syscall::CLONE_THREAD_FLAGS,
+            stack_base.add(size),
+            entry,
             storage.tls_base() as u64,
         )
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let t = unsafe { crate::syscall::NewThread(stack_base, size, entry, storage.tls_base()) };
+        if t > 0 {
+            storage.pthread.store(t as usize, Ordering::Release);
+        }
+        t as i64
     }
 }
 

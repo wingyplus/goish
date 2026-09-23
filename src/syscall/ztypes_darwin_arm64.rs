@@ -257,9 +257,9 @@ pub struct FanotifyEventInfoHeader {
 #[derive(Clone)]
 pub struct FileHandle {
     #[allow(dead_code)]
-    handle_type: i32,
+    pub(crate) handle_type: i32,
     #[allow(dead_code)]
-    bytes: crate::slice<u8>,
+    pub(crate) bytes: crate::slice<u8>,
 }
 
 impl core::fmt::Debug for FileHandle {

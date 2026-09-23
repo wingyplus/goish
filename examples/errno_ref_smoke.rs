@@ -1,6 +1,8 @@
 // errno_ref_smoke — what a raw errno says about itself.
 //
-// Reference: Go 1.25.5 syscall, measured by tools/gen_errno_ref.go.
+// Reference: Go 1.25.5 syscall, measured by tools/gen_errno_ref.go
+// (linux/amd64); the darwin table by the same Printf over the same
+// errno names at Darwin's numbers, run natively on darwin/arm64.
 // Every GO[] line is Go's verbatim output.
 //
 // Nine of these twenty-five rendered as the bare word "errno" before
@@ -31,6 +33,7 @@ use goish::fmt;
 use goish::syscall;
 
 // Go's verbatim output.
+#[cfg(not(target_os = "macos"))]
 const GO: [&str; 25] = [
     "errno 0    \"errno 0\"                          timeout=false temporary=false",
     "errno 1    \"operation not permitted\"          timeout=false temporary=false",
@@ -57,6 +60,39 @@ const GO: [&str; 25] = [
     "errno 105  \"no buffer space available\"        timeout=false temporary=false",
     "errno 110  \"connection timed out\"             timeout=true  temporary=true",
     "errno 111  \"connection refused\"               timeout=false temporary=false",
+];
+
+// darwin/arm64: the same twenty-five errnos by NAME, at Darwin's
+// numbers (EAGAIN is 35 there, ECONNREFUSED 61, …), rendered by Go on
+// darwin/arm64. The raw Linux numbers would name different errors on
+// this target — 11 is EDEADLK — so pinning those would test nothing.
+#[cfg(target_os = "macos")]
+const GO: [&str; 25] = [
+    "errno 0    \"errno 0\"                          timeout=false temporary=false",
+    "errno 1    \"operation not permitted\"          timeout=false temporary=false",
+    "errno 2    \"no such file or directory\"        timeout=false temporary=false",
+    "errno 4    \"interrupted system call\"          timeout=false temporary=true",
+    "errno 9    \"bad file descriptor\"              timeout=false temporary=false",
+    "errno 35   \"resource temporarily unavailable\" timeout=true  temporary=true",
+    "errno 12   \"cannot allocate memory\"           timeout=false temporary=false",
+    "errno 13   \"permission denied\"                timeout=false temporary=false",
+    "errno 17   \"file exists\"                      timeout=false temporary=false",
+    "errno 20   \"not a directory\"                  timeout=false temporary=false",
+    "errno 21   \"is a directory\"                   timeout=false temporary=false",
+    "errno 22   \"invalid argument\"                 timeout=false temporary=false",
+    "errno 23   \"too many open files in system\"    timeout=false temporary=true",
+    "errno 24   \"too many open files\"              timeout=false temporary=true",
+    "errno 32   \"broken pipe\"                      timeout=false temporary=false",
+    "errno 78   \"function not implemented\"         timeout=false temporary=false",
+    "errno 66   \"directory not empty\"              timeout=false temporary=false",
+    "errno 45   \"operation not supported\"          timeout=false temporary=false",
+    "errno 48   \"address already in use\"           timeout=false temporary=false",
+    "errno 49   \"can't assign requested address\"   timeout=false temporary=false",
+    "errno 53   \"software caused connection abort\" timeout=false temporary=false",
+    "errno 54   \"connection reset by peer\"         timeout=false temporary=false",
+    "errno 55   \"no buffer space available\"        timeout=false temporary=false",
+    "errno 60   \"operation timed out\"              timeout=true  temporary=true",
+    "errno 61   \"connection refused\"               timeout=false temporary=false",
 ];
 
 static FAILED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
@@ -86,9 +122,15 @@ fn chk(got: goish::string) {
 
 #[goish::main]
 fn main() {
+    #[cfg(not(target_os = "macos"))]
     let ns: [i32; 25] = [
         0, 1, 2, 4, 9, 11, 12, 13, 17, 20, 21, 22, 23, 24, 32, 38, 39, 95, 98, 99, 103, 104, 105,
         110, 111,
+    ];
+    #[cfg(target_os = "macos")]
+    let ns: [i32; 25] = [
+        0, 1, 2, 4, 9, 35, 12, 13, 17, 20, 21, 22, 23, 24, 32, 78, 66, 45, 48, 49, 53, 54, 55, 60,
+        61,
     ];
     for n in ns.iter() {
         let e = syscall::Errno(*n as _);

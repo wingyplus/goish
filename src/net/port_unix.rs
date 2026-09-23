@@ -31,20 +31,13 @@ fn read_whole_file(path: &str) -> Option<Vec<u8>> {
     let mut out: Vec<u8> = Vec::new();
     let mut chunk = vec![0u8; 8192];
     loop {
-        let n = unsafe {
-            crate::syscall::syscall3(
-                crate::syscall::SYS_READ,
-                fd as usize,
-                chunk.as_mut_ptr() as usize,
-                chunk.len(),
-            ) as isize
-        };
+        let n = crate::syscall::Read(fd, chunk.as_mut_ptr(), chunk.len());
         if n <= 0 {
             break;
         }
         out.extend_from_slice(&chunk[..n as usize]);
     }
-    let _ = unsafe { crate::syscall::syscall1(crate::syscall::SYS_CLOSE, fd as usize) };
+    let _ = crate::syscall::Close(fd);
     if out.is_empty() {
         return None;
     }

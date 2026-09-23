@@ -2239,7 +2239,7 @@ impl File {
             // it is the same shape net's TCPConn.Close reports.
             return self.wrapErr("close", ErrClosed.into());
         }
-        let rc = unsafe { syscall::syscall1(syscall::SYS_CLOSE, self.fd as usize) };
+        let rc = syscall::Close(self.fd) as isize;
         let old_fd = self.fd;
         self.fd = -1;
         if rc < 0 {
@@ -2257,7 +2257,7 @@ impl File {
         if self.fd < 0 {
             return self.wrapErr("sync", ErrClosed.into());
         }
-        let rc = unsafe { syscall::syscall1(syscall::SYS_FSYNC, self.fd as usize) };
+        let rc = syscall::Fsync(self.fd) as isize;
         if rc < 0 {
             self.fdErr("sync", rc)
         } else {

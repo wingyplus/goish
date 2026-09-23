@@ -18,7 +18,9 @@
 //   5. `heap::mheap_init` + `mcentral::mcentral_init` — the allocator.
 //   6. `sched::register_m_storage` + `sched::setup_main_g0` — the main
 //      M's `g0`, adopting the OS stack from libpthread's bounds.
-//   7. `sched::bootstrap_ps(1)` + `acquirep` — one P, bound to the main M.
+//   7. `sched::bootstrap_ps(n)` + `acquirep`, then `bootstrap_workers`
+//      and `start_sysmon` — n Ps, a pthread M per P beyond the first,
+//      and sysmon (M7).
 //   8. `__goish_main()` on a goroutine, then `m_schedule_loop` on g0;
 //      the process exits when `main` returns (M5a).
 //
@@ -39,13 +41,6 @@
 //
 // Skipped, each with the milestone that turns it on:
 //
-//   `bootstrap_workers`   M7 — `pthread_create` workers park on a
-//                              futex when idle; Darwin has none until
-//                              the `pthread_cond` replacement lands.
-//   `start_sysmon`        M7 — a thread too, and it sleeps the same way.
-//   SIGPIPE `SIG_IGN`     M6 — and Darwin has a better answer than the
-//                              process-wide ignore: `SO_NOSIGPIPE` is
-//                              per-socket. Nothing opens a socket yet.
 //   `preempt::install`    M8
 //   `symbolize::init`     M6 — mmaps `/proc/self/exe` and parses ELF.
 //                              Permanently degraded here: DWARF is not
@@ -54,15 +49,6 @@
 //                              `file:line`.
 //   `segv::install`       M6
 //
-// The load-bearing consequence of M5a: **one M, cooperative.** Goroutines
-// run, park and wake on the main thread, and `main` is a real goroutine
-// — but with no worker Ms and no sysmon, nothing runs in parallel, a
-// timer never fires, and a process whose goroutines are all blocked
-// reaches the idle-M park, whose futex aborts naming M7 rather than
-// hanging.
-//
-// M7 turns on workers and sysmon; M6 deletes most of the rest.
-
 use crate::runtime::{args, flags, heap, mcentral, rand, sched};
 use crate::sys;
 
@@ -115,14 +101,28 @@ pub extern "C" fn __goish_rt0(
     sched::register_m_storage(&sched::MAIN_M);
     sched::setup_main_g0();
 
-    // One P, bound to the main M. One and not `num_cpus()`: there are
-    // no worker Ms yet (they park on a futex, which is M7 here), so a
-    // P nobody runs would only hold Gs that `runqsteal` must rescue.
-    // `GOMAXPROCS` reports what is true.
-    sched::bootstrap_ps(1);
+    // One P per usable CPU (or `GOMAXPROCS`), P0 bound to the main M,
+    // then a worker M for each of the rest and the sysmon thread — the
+    // Linux boot's order. Both kinds of thread are pthreads here and
+    // park on `__ulock` (M7; see `syscall::Futex`).
+    let nprocs = sched::startup_procs();
+    sched::bootstrap_ps(nprocs);
     if let Some(p0) = sched::p_at(0) {
         sched::acquirep(p0);
     }
+    sched::bootstrap_workers(nprocs);
+
+    // Sysmon's force-preempt scan signals a long-running M with SIGURG,
+    // and nothing handles SIGURG until M8 installs the handler. Timers
+    // and signal dispatch do not depend on it, so sysmon runs; the
+    // cooperative `preempt` flag it also sets stays in effect.
+    flags::ASYNC_PREEMPT.store(false, core::sync::atomic::Ordering::Relaxed);
+    crate::runtime::sysmon::start_sysmon();
+
+    // SIGPIPE ignored and Go's catch-and-drop set handled, as on Linux
+    // (M6). Signal handlers here are libc `sigaction` handlers entered
+    // through libSystem's `_sigtramp`.
+    crate::runtime::signal::install_boot_handlers();
 
     // Hand off to the user's `main` on a goroutine, as Go's
     // `runtime.main` does and as the amd64 boot does: an 8 MiB lazily

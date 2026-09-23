@@ -91,23 +91,27 @@ pub use lookup::{
 pub use mac::{HardwareAddr, HardwareAddrString, ParseMAC};
 pub use parse::TCPAddr;
 
-/// `EAGAIN` / `EWOULDBLOCK` (Linux: same value, 11). The non-blocking
+// Errno values the socket paths branch on, as raw `i32`s. Taken from
+// `syscall` rather than written as numbers: they differ by OS (EAGAIN
+// is 11 on Linux and 35 on Darwin, EINPROGRESS 115 and 36).
+
+/// `EAGAIN` / `EWOULDBLOCK` (equal on both targets). The non-blocking
 /// I/O retry signal — caller parks on the netpoller and re-attempts.
-const EAGAIN: i32 = 11;
-const ECONNABORTED: i32 = 103;
-const EMFILE: i32 = 24;
-const ENFILE: i32 = 23;
-const ENOBUFS: i32 = 105;
-const ENOMEM: i32 = 12;
-/// `EINPROGRESS` (Linux: 115). Returned by non-blocking `connect(2)`
-/// to indicate the connection handshake is underway.
-const EINPROGRESS: i32 = 115;
-/// `EINTR` (Linux: 4). Syscall interrupted by signal — caller retries
-/// the syscall directly without parking.
-const EINTR: i32 = 4;
-/// `EBADF` (Linux: 9). Surfaces when Close races an in-flight retry
-/// loop; paired with the `closed` flag it maps to `ErrClosed`.
-const EBADF: i32 = 9;
+const EAGAIN: i32 = syscall::EAGAIN.0;
+const ECONNABORTED: i32 = syscall::ECONNABORTED.0;
+const EMFILE: i32 = syscall::EMFILE.0;
+const ENFILE: i32 = syscall::ENFILE.0;
+const ENOBUFS: i32 = syscall::ENOBUFS.0;
+const ENOMEM: i32 = syscall::ENOMEM.0;
+/// `EINPROGRESS`. Returned by non-blocking `connect(2)` to indicate
+/// the connection handshake is underway.
+const EINPROGRESS: i32 = syscall::EINPROGRESS.0;
+/// `EINTR`. Syscall interrupted by signal — caller retries the syscall
+/// directly without parking.
+const EINTR: i32 = syscall::EINTR.0;
+/// `EBADF`. Surfaces when Close races an in-flight retry loop; paired
+/// with the `closed` flag it maps to `ErrClosed`.
+const EBADF: i32 = syscall::EBADF.0;
 
 // ─── Listener ────────────────────────────────────────────────────────
 
@@ -1208,14 +1212,7 @@ fn listen_with_config(
     // Recover the kernel-assigned port if the user passed `:0`.
     let mut got = syscall::SockaddrIn::loopback(0);
     let mut got_len: u32 = core::mem::size_of::<syscall::SockaddrIn>() as u32;
-    let r = unsafe {
-        syscall::syscall3(
-            syscall::SYS_GETSOCKNAME,
-            fd as usize,
-            &mut got as *mut _ as usize,
-            &mut got_len as *mut _ as usize,
-        )
-    };
+    let r = syscall::Getsockname(fd, &mut got as *mut _ as *mut u8, &mut got_len);
     if r < 0 {
         let _ = syscall::Close(fd);
         return (dead_listener(), errno_error("getsockname", (-r) as i32));
@@ -1497,14 +1494,7 @@ fn dial_deadline(network: string, addr: string, deadline_ns: i64) -> (TCPConn, e
         // one ref).
         let mut local = syscall::SockaddrIn::loopback(0);
         let mut local_len: u32 = core::mem::size_of::<syscall::SockaddrIn>() as u32;
-        let _ = unsafe {
-            syscall::syscall3(
-                syscall::SYS_GETSOCKNAME,
-                fd as usize,
-                &mut local as *mut _ as usize,
-                &mut local_len as *mut _ as usize,
-            )
-        };
+        let _ = syscall::Getsockname(fd, &mut local as *mut _ as *mut u8, &mut local_len);
         let pd_raw = Arc::into_raw(arc) as *mut PollDesc;
         return (
             TCPConn {
@@ -1520,14 +1510,7 @@ fn dial_deadline(network: string, addr: string, deadline_ns: i64) -> (TCPConn, e
     // Recover both ends.
     let mut local = syscall::SockaddrIn::loopback(0);
     let mut local_len: u32 = core::mem::size_of::<syscall::SockaddrIn>() as u32;
-    let _ = unsafe {
-        syscall::syscall3(
-            syscall::SYS_GETSOCKNAME,
-            fd as usize,
-            &mut local as *mut _ as usize,
-            &mut local_len as *mut _ as usize,
-        )
-    };
+    let _ = syscall::Getsockname(fd, &mut local as *mut _ as *mut u8, &mut local_len);
 
     (
         TCPConn {

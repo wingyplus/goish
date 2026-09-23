@@ -775,12 +775,9 @@ pub fn reflect(attr: TokenStream, item: TokenStream) -> TokenStream {
     // generated structs would be a footgun whose symptom is a runtime
     // error on one field of one message. Registration is idempotent.
     //
-    // On Mach-O `.init_array` is not a valid section specifier, and there
-    // is no ELF-style walk to find it anyway, so the registration is
-    // simply not placed there on macOS — the same M10 gap `goish::import!`
-    // has (see `__run_pkg_inits` in the goish crate). The type still
-    // compiles and marshals directly; only marshaling it while held in a
-    // `goish::Any` needs the explicit `RegisterAnyMarshaler::<T>()` there.
+    // On Mach-O `.init_array` is not a valid section specifier; the
+    // registration goes in `__DATA,__goish_init` there instead, the
+    // section `goish::import!` uses and `__run_pkg_inits` walks.
     let reg_fn = format!("__goish_reg_any_marshal_{}", parsed.name);
     let reg_slot = format!("__GOISH_REG_ANY_MARSHAL_{}", parsed.name.to_uppercase());
     let _ = write!(
@@ -793,6 +790,7 @@ pub fn reflect(attr: TokenStream, item: TokenStream) -> TokenStream {
          #[doc(hidden)]\n\
          #[allow(non_upper_case_globals)]\n\
          #[cfg_attr(not(target_os = \"macos\"), link_section = \".init_array\")]\n\
+         #[cfg_attr(target_os = \"macos\", link_section = \"__DATA,__goish_init\")]\n\
          static {reg_slot}: extern \"C\" fn() = {reg_fn};\n",
         reg_fn = reg_fn,
         reg_slot = reg_slot,
@@ -1240,7 +1238,10 @@ pub fn import(input: TokenStream) -> TokenStream {
     // is conventionally formatted, not user-visible.
     let _ = writeln!(out, "#[used]");
     let _ = writeln!(out, "#[allow(non_upper_case_globals)]");
-    let _ = writeln!(out, "#[link_section = \".init_array\"]");
+    // Mach-O has no `.init_array` to borrow; the Darwin twin is a
+    // private section that `__run_pkg_inits` walks by ld64's bounds.
+    let _ = writeln!(out, "#[cfg_attr(not(target_os = \"macos\"), link_section = \".init_array\")]");
+    let _ = writeln!(out, "#[cfg_attr(target_os = \"macos\", link_section = \"__DATA,__goish_init\")]");
     let _ = writeln!(
         out,
         "static {}: extern \"C\" fn() = {};",

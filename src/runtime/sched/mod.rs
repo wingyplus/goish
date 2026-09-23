@@ -88,7 +88,8 @@ pub use scheduler::{
     block_forever_commit, bootstrap_workers, chan_park_commit, current_g, for_each_m, gopark,
     goready, live_g_count, lock_os_thread, m_schedule_loop, mark_dispatching, newproc, newproc_at,
     newproc_with_stack, newproc_with_stack_at, num_cpus, panicking, register_m_storage,
-    registered_m_count, runq_len, schedule, selparkcommit, startup_procs, unlock_os_thread,
+    registered_m_count, runq_len, schedule, selparkcommit, start_os_thread, startup_procs,
+    unlock_os_thread,
     Gosched, DISPATCH_STAMP_COUNT, G_PANIC_COUNT,
 };
 pub use stack::{

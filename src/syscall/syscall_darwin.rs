@@ -337,19 +337,19 @@ pub unsafe extern "C" fn Clone(
 // Generated from the Linux wrappers' signatures so the two surfaces
 // cannot drift: same names, same argument and return types, bodies
 // replaced by `todo()`.
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Ioctl(fd: i32, req: usize, arg: usize) -> isize {
-    todo("Ioctl", "M6")
+    unsafe { sys::sys_ioctl(fd, req as u64, arg) }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Open(path: *const u8, flags: i32, mode: i32) -> i32 {
-    todo("Open", "M2")
+    unsafe { sys::sys_open(path, flags, mode) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Close(fd: i32) -> i32 {
-    todo("Close", "M2")
+    unsafe { sys::sys_close(fd) as i32 }
 }
 
 #[allow(non_snake_case, unused_variables)]
@@ -372,109 +372,113 @@ pub fn Dup3(oldfd: i32, newfd: i32, flags: i32) -> i32 {
     todo("Dup3", "os/exec")
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Fstat(fd: i32, out: &mut Stat_t) -> i32 {
-    todo("Fstat", "M2")
+    unsafe { sys::sys_fstat(fd, out as *mut Stat_t as *mut u8) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Stat(path: *const u8, out: &mut Stat_t) -> i32 {
-    todo("Stat", "M2")
+    unsafe { sys::sys_stat(path, out as *mut Stat_t as *mut u8) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Lstat(path: *const u8, out: &mut Stat_t) -> i32 {
-    todo("Lstat", "M2")
+    unsafe { sys::sys_lstat(path, out as *mut Stat_t as *mut u8) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Lseek(fd: i32, offset: i64, whence: i32) -> i64 {
-    todo("Lseek", "M2")
+    unsafe { sys::sys_lseek(fd, offset, whence) as i64 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Pread64(fd: i32, buf: *mut u8, count: usize, offset: i64) -> isize {
-    todo("Pread64", "M2")
+    unsafe { sys::sys_pread(fd, buf, count, offset) }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Pwrite64(fd: i32, buf: *const u8, count: usize, offset: i64) -> isize {
-    todo("Pwrite64", "M2")
+    unsafe { sys::sys_pwrite(fd, buf, count, offset) }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Ftruncate(fd: i32, length: i64) -> i32 {
-    todo("Ftruncate", "M2")
+    unsafe { sys::sys_ftruncate(fd, length) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Flock(fd: crate::types::int, operation: crate::types::int) -> crate::errors::error {
-    todo("Flock", "M2")
+    let rc = unsafe { sys::sys_flock(fd as i32, operation as i32) } as i32;
+    if rc >= 0 {
+        return crate::errors::nil;
+    }
+    Errno(-rc).into()
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Mkdir(path: *const u8, mode: u32) -> i32 {
-    todo("Mkdir", "M2")
+    unsafe { sys::sys_mkdir(path, mode as u16) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Unlink(path: *const u8) -> i32 {
-    todo("Unlink", "M2")
+    unsafe { sys::sys_unlink(path) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Rmdir(path: *const u8) -> i32 {
-    todo("Rmdir", "M2")
+    unsafe { sys::sys_rmdir(path) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Getcwd(buf: *mut u8, size: usize) -> isize {
-    todo("Getcwd", "M2")
+    unsafe { sys::sys_getcwd(buf, size) }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Chdir(path: *const u8) -> i32 {
-    todo("Chdir", "M2")
+    unsafe { sys::sys_chdir(path) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Chmod(path: *const u8, mode: u32) -> i32 {
-    todo("Chmod", "M2")
+    unsafe { sys::sys_chmod(path, mode as u16) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Fchmod(fd: i32, mode: u32) -> i32 {
-    todo("Fchmod", "M2")
+    unsafe { sys::sys_fchmod(fd, mode as u16) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Symlink(oldname: *const u8, newname: *const u8) -> i32 {
-    todo("Symlink", "M2")
+    unsafe { sys::sys_symlink(oldname, newname) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Readlink(path: *const u8, buf: *mut u8, bufsiz: usize) -> isize {
-    todo("Readlink", "M2")
+    unsafe { sys::sys_readlink(path, buf, bufsiz) }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Utimensat(dirfd: i32, path: *const u8, times: *const Timespec, flags: i32) -> i32 {
-    todo("Utimensat", "M2")
+    unsafe { sys::sys_utimensat(dirfd, path, times as *const u8, flags) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Rename(oldpath: *const u8, newpath: *const u8) -> i32 {
-    todo("Rename", "M2")
+    unsafe { sys::sys_rename(oldpath, newpath) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Link(oldpath: *const u8, newpath: *const u8) -> i32 {
-    todo("Link", "M2")
+    unsafe { sys::sys_link(oldpath, newpath) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Truncate(path: *const u8, length: i64) -> i32 {
-    todo("Truncate", "M2")
+    unsafe { sys::sys_truncate(path, length) as i32 }
 }
 
 #[allow(non_snake_case, unused_variables)]
@@ -482,14 +486,14 @@ pub fn Pipe2(pipefd: &mut [i32; 2], flags: i32) -> i32 {
     todo("Pipe2", "os/exec")
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Chown(path: *const u8, uid: i32, gid: i32) -> i32 {
-    todo("Chown", "M2")
+    unsafe { sys::sys_chown(path, uid as u32, gid as u32) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Lchown(path: *const u8, uid: i32, gid: i32) -> i32 {
-    todo("Lchown", "M2")
+    unsafe { sys::sys_lchown(path, uid as u32, gid as u32) as i32 }
 }
 
 /// `uname(3)` — 0 or `-errno`. Darwin's `Utsname` is five 256-byte
@@ -511,14 +515,14 @@ pub fn Getrandom(buf: *mut u8, buflen: usize, flags: u32) -> i64 {
     buflen as i64
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Getdents64(fd: i32, buf: *mut u8, buflen: usize) -> i64 {
-    todo("Getdents64", "M2")
+    getdents64(fd, buf, buflen)
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Recvfrom(fd: i32, buf: *mut u8, len: usize, flags: i32) -> isize {
-    todo("Recvfrom", "M9")
+    unsafe { sys::sys_recvfrom(fd, buf, len, flags, core::ptr::null_mut(), core::ptr::null_mut()) }
 }
 
 /// `clock_gettime(2)` — read `clk` into `tp`; 0 or `-errno`.
@@ -615,13 +619,34 @@ pub fn Tgkill(tgid: i32, tid: i32, sig: i32) -> isize {
     todo("Tgkill", "M8")
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub unsafe fn RtSigaction(
     sig: i32,
     new: *const Sigaction,
     old: *mut Sigaction,
 ) -> isize {
-    todo("RtSigaction", "M6")
+    let mut bnew = sys::BsdSigaction::default();
+    let np = if new.is_null() {
+        core::ptr::null()
+    } else {
+        let n = &*new;
+        bnew.handler = n.sa_handler;
+        bnew.mask = n.sa_mask as u32;
+        bnew.flags = n.sa_flags as i32;
+        &bnew as *const sys::BsdSigaction
+    };
+    let mut bold = sys::BsdSigaction::default();
+    let op = if old.is_null() { core::ptr::null_mut() } else { &mut bold as *mut sys::BsdSigaction };
+    let r = sys::sys_sigaction(sig, np, op);
+    if r == 0 && !old.is_null() {
+        *old = Sigaction {
+            sa_handler: bold.handler,
+            sa_flags: bold.flags as u32 as u64,
+            sa_restorer: 0,
+            sa_mask: bold.mask as u64,
+        };
+    }
+    r
 }
 
 /// `sigaltstack(2)`. Real from M4, ahead of the M6 handlers that use
@@ -634,19 +659,88 @@ pub unsafe fn Sigaltstack(new: *const SigaltstackT, old: *mut SigaltstackT) -> i
     sys::sys_sigaltstack(new as *const u8, old as *mut u8)
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `sched_yield(2)`.
+#[allow(non_snake_case)]
 pub fn SchedYield() -> isize {
-    todo("SchedYield", "M5")
+    unsafe { sys::sys_sched_yield() }
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `futex(2)`'s two private operations, over the kernel's `__ulock`
+/// wait queue (M7).
+///
+/// Go's darwin port parks Ms on a `pthread_cond` instead
+/// (`runtime/os_darwin.go:31-92`, `semasleep`/`semawakeup`). goish
+/// keeps its futex-shaped `Note` and sysmon nap, so the wrapper is the
+/// seam — and `sysmon::wake` is called from a signal handler, where a
+/// ulock wake (one syscall) is async-signal-safe and
+/// `pthread_cond_signal` is not.
+///
+/// `ts` is a relative timeout, as for `FUTEX_WAIT`. Returns 0 or
+/// `-errno`, for WAKE the number woken (0 or 1; `val > 1` wakes all).
+#[allow(non_snake_case)]
 pub fn Futex(
     addr: *const u32,
     op: i32,
     val: u32,
     ts: *const Timespec,
 ) -> isize {
-    todo("Futex", "M7")
+    match op {
+        FUTEX_WAIT_PRIVATE => {
+            let ns = if ts.is_null() {
+                0
+            } else {
+                let t = unsafe { &*ts };
+                // 0 means "forever" to the kernel, so a zero-length
+                // wait is rounded up to one nanosecond.
+                ((t.tv_sec as u64) * 1_000_000_000 + t.tv_nsec as u64).max(1)
+            };
+            unsafe { sys::sys_ulock_wait(addr, val, ns) }
+        }
+        FUTEX_WAKE_PRIVATE => unsafe { sys::sys_ulock_wake(addr, val > 1) },
+        _ => -(ENOSYS.0 as isize),
+    }
+}
+
+/// Start an OS thread running `entry` on the caller-owned stack
+/// `[stack_base, stack_base + size)`, with its thread pointer already
+/// set to `tls` — Darwin's spelling of `Clone(CLONE_THREAD_FLAGS, …)`.
+///
+/// `clone(2)` plants the thread pointer atomically with the thread
+/// (`CLONE_SETTLS`); `pthread_create` has no equivalent, so a
+/// trampoline sets the TSD slot before `entry` runs — and before
+/// anything takes a `SpinLock`, whose lock count lives behind it.
+/// Returns the `pthread_t`, or `-errno`.
+#[allow(non_snake_case)]
+pub unsafe fn NewThread(
+    stack_base: *mut u8,
+    size: usize,
+    entry: extern "C" fn() -> !,
+    tls: usize,
+) -> isize {
+    #[repr(C)]
+    struct Start {
+        entry: extern "C" fn() -> !,
+        tls: usize,
+    }
+    extern "C" fn trampoline(arg: *mut u8) -> *mut u8 {
+        // Copy out before the thread pointer exists; the box is freed
+        // after, since freeing reaches the allocator's per-M state.
+        let (entry, tls) = unsafe {
+            let s = &*(arg as *const Start);
+            (s.entry, s.tls)
+        };
+        unsafe {
+            crate::runtime::sched::tls::set_base(tls);
+            drop(alloc::boxed::Box::from_raw(arg as *mut Start));
+        }
+        entry()
+    }
+    let arg = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Start { entry, tls })) as *mut u8;
+    let r = sys::sys_pthread_spawn(stack_base, size, trampoline, arg);
+    if r < 0 {
+        drop(alloc::boxed::Box::from_raw(arg as *mut Start));
+    }
+    r
 }
 
 #[allow(non_snake_case, unused_variables)]
@@ -654,42 +748,44 @@ pub fn SchedGetaffinity(pid: i32, cpusetsize: usize, mask: *mut u8) -> isize {
     todo("SchedGetaffinity", "M3")
 }
 
+/// End the calling thread (not the process). The exit code has no
+/// Darwin meaning for a detached pthread and is dropped.
 #[allow(non_snake_case, unused_variables)]
 pub fn ExitThread(code: i32) -> ! {
-    todo("ExitThread", "M4")
+    unsafe { sys::sys_pthread_exit() }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Socket(domain: i32, type_: i32, protocol: i32) -> i32 {
-    todo("Socket", "M9")
+    socket_with_flags(domain, type_, protocol)
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Bind(fd: i32, addr: *const SockaddrIn, addrlen: u32) -> i32 {
-    todo("Bind", "M9")
+    unsafe { sys::sys_bind(fd, addr as *const u8, addrlen) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Listen(fd: i32, backlog: i32) -> i32 {
-    todo("Listen", "M9")
+    unsafe { sys::sys_listen(fd, backlog) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Accept4(
     fd: i32,
     addr: *mut SockaddrIn,
     addrlen: *mut u32,
     flags: i32,
 ) -> i32 {
-    todo("Accept4", "M9")
+    accept_with_flags(fd, addr as *mut u8, addrlen, flags)
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Connect(fd: i32, addr: *const SockaddrIn, addrlen: u32) -> i32 {
-    todo("Connect", "M9")
+    unsafe { sys::sys_connect(fd, addr as *const u8, addrlen) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Setsockopt(
     fd: i32,
     level: i32,
@@ -697,15 +793,26 @@ pub fn Setsockopt(
     val: *const u8,
     len: u32,
 ) -> i32 {
-    todo("Setsockopt", "M9")
+    unsafe { sys::sys_setsockopt(fd, level, name, val, len) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn SetsockoptInt(fd: crate::int, level: crate::int, opt: crate::int, value: crate::int) -> crate::error {
-    todo("SetsockoptInt", "M9")
+    let n: i32 = value as i32;
+    let rc = Setsockopt(
+        fd as i32,
+        level as i32,
+        opt as i32,
+        &n as *const i32 as *const u8,
+        core::mem::size_of::<i32>() as u32,
+    );
+    if rc < 0 {
+        return Errno(-rc).into();
+    }
+    crate::errors::nil
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Getsockopt(
     fd: i32,
     level: i32,
@@ -713,40 +820,47 @@ pub fn Getsockopt(
     val: *mut u8,
     len: *mut u32,
 ) -> i32 {
-    todo("Getsockopt", "M9")
+    unsafe { sys::sys_getsockopt(fd, level, name, val, len) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Shutdown(fd: i32, how: i32) -> i32 {
-    todo("Shutdown", "M9")
+    unsafe { sys::sys_shutdown(fd, how) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Fcntl(fd: i32, cmd: i32, arg: i32) -> i32 {
-    todo("Fcntl", "M9")
+    unsafe { sys::sys_fcntl(fd, cmd, arg as isize) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn EpollCreate1(flags: i32) -> i32 {
-    todo("EpollCreate1", "M9")
+    epoll_create1(flags)
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn EpollCtl(
     epfd: i32,
     op: i32,
     fd: i32,
     event: *mut EpollEvent,
 ) -> i32 {
-    todo("EpollCtl", "M9")
+    epoll_ctl(epfd, op, fd, event)
 }
+
+// ─── Linux-only kernel interfaces ──────────────────────────────────────
+//
+// eventfd, inotify, fanotify and name_to_handle_at have no Darwin
+// counterpart, and Go does not offer them there either (they live in
+// `golang.org/x/sys/unix` under `//go:build linux`). They answer ENOSYS
+// rather than abort, so a caller probing for them can fall back.
 
 #[allow(non_snake_case, unused_variables)]
 pub fn Eventfd(initval: u32, flags: i32) -> i32 {
-    todo("Eventfd", "M9")
+    -(ENOSYS.0)
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn EpollPwait(
     epfd: i32,
     events: *mut EpollEvent,
@@ -755,12 +869,14 @@ pub fn EpollPwait(
     sigmask: *const u8,
     sigsetsize: usize,
 ) -> i32 {
-    todo("EpollPwait", "M9")
+    // No signal mask to swap: the netpoller passes none.
+    let _ = (sigmask, sigsetsize);
+    epoll_pwait(epfd, events, maxevents, timeout_ms)
 }
 
 #[allow(non_snake_case, unused_variables)]
 pub fn InotifyInit1(flags: crate::int) -> (crate::int, crate::error) {
-    todo("InotifyInit1", "M9")
+    (-1, ENOSYS.into())
 }
 
 #[allow(non_snake_case, unused_variables)]
@@ -769,17 +885,17 @@ pub fn InotifyAddWatch<P: Into<crate::string>>(
     pathname: P,
     mask: u32,
 ) -> (crate::int, crate::error) {
-    todo("InotifyAddWatch", "M9")
+    (-1, ENOSYS.into())
 }
 
 #[allow(non_snake_case, unused_variables)]
 pub fn InotifyRmWatch(fd: crate::int, watchdesc: u32) -> (crate::int, crate::error) {
-    todo("InotifyRmWatch", "M9")
+    (-1, ENOSYS.into())
 }
 
 #[allow(non_snake_case, unused_variables)]
 pub fn FanotifyInit(flags: u32, event_f_flags: u32) -> (crate::int, crate::error) {
-    todo("FanotifyInit", "M9")
+    (-1, ENOSYS.into())
 }
 
 #[allow(non_snake_case, unused_variables)]
@@ -790,7 +906,7 @@ pub fn FanotifyMark<P: Into<crate::string>>(
     dirFd: crate::int,
     pathname: P,
 ) -> crate::error {
-    todo("FanotifyMark", "M9")
+    ENOSYS.into()
 }
 
 #[allow(non_snake_case, unused_variables)]
@@ -799,17 +915,26 @@ pub fn NameToHandleAt<P: Into<crate::string>>(
     path: P,
     flags: crate::int,
 ) -> (FileHandle, crate::int, crate::error) {
-    todo("NameToHandleAt", "M9")
+    (FileHandle { handle_type: 0, bytes: crate::slice::new() }, 0, ENOSYS.into())
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Poll(fds: &mut [PollFd], timeout: crate::int) -> (crate::int, crate::error) {
-    todo("Poll", "M9")
+    let rc = unsafe { sys::sys_poll(fds.as_mut_ptr() as *mut u8, fds.len() as u32, timeout as i32) };
+    if rc < 0 {
+        return (0, Errno(-(rc as i32)).into());
+    }
+    (rc as crate::int, crate::errors::nil)
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Statfs<P: Into<crate::string>>(path: P, buf: &mut Statfs_t) -> crate::error {
-    todo("Statfs", "M2")
+    let p = __c_path(path.into());
+    let rc = unsafe { sys::sys_statfs(p.as_ptr(), buf as *mut Statfs_t as *mut u8) };
+    if rc < 0 {
+        return Errno(-(rc as i32)).into();
+    }
+    crate::errors::nil
 }
 
 
@@ -820,32 +945,32 @@ pub fn Statfs<P: Into<crate::string>>(path: P, buf: &mut Statfs_t) -> crate::err
 // the fd-relative file calls are the M2 file surface, the raw socket
 // calls are M9, and `Setitimer` drives pprof's SIGPROF, which is M6.
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn __openat_raw(dirfd: i32, path: *const u8, flags: i32, mode: i32) -> i32 {
-    todo("__openat_raw", "M2")
+    unsafe { sys::sys_openat(dirfd, path, flags, mode) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Mkdirat(dirfd: i32, path: *const u8, mode: u32) -> i32 {
-    todo("Mkdirat", "M2")
+    unsafe { sys::sys_mkdirat(dirfd, path, mode as u16) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Unlinkat(dirfd: i32, path: *const u8, flags: i32) -> i32 {
-    todo("Unlinkat", "M2")
+    unsafe { sys::sys_unlinkat(dirfd, path, flags) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Fstatat(dirfd: i32, path: *const u8, out: &mut Stat_t, flags: i32) -> i32 {
-    todo("Fstatat", "M2")
+    unsafe { sys::sys_fstatat(dirfd, path, out as *mut Stat_t as *mut u8, flags) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Renameat(olddirfd: i32, oldpath: *const u8, newdirfd: i32, newpath: *const u8) -> i32 {
-    todo("Renameat", "M2")
+    unsafe { sys::sys_renameat(olddirfd, oldpath, newdirfd, newpath) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Linkat(
     olddirfd: i32,
     oldpath: *const u8,
@@ -853,55 +978,452 @@ pub fn Linkat(
     newpath: *const u8,
     flags: i32,
 ) -> i32 {
-    todo("Linkat", "M2")
+    unsafe { sys::sys_linkat(olddirfd, oldpath, newdirfd, newpath, flags) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Symlinkat(target: *const u8, newdirfd: i32, linkpath: *const u8) -> i32 {
-    todo("Symlinkat", "M2")
+    unsafe { sys::sys_symlinkat(target, newdirfd, linkpath) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Fchdir(fd: i32) -> i32 {
-    todo("Fchdir", "M2")
+    unsafe { sys::sys_fchdir(fd) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Fchown(fd: i32, uid: u32, gid: u32) -> i32 {
-    todo("Fchown", "M2")
+    unsafe { sys::sys_fchown(fd, uid, gid) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Fchmodat(dirfd: i32, path: *const u8, mode: u32, flags: i32) -> i32 {
-    todo("Fchmodat", "M2")
+    unsafe { sys::sys_fchmodat(dirfd, path, mode as u16, flags) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Fchownat(dirfd: i32, path: *const u8, uid: u32, gid: u32, flags: i32) -> i32 {
-    todo("Fchownat", "M2")
+    unsafe { sys::sys_fchownat(dirfd, path, uid, gid, flags) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Readlinkat(dirfd: i32, path: *const u8, buf: *mut u8, bufsiz: usize) -> isize {
-    todo("Readlinkat", "M2")
+    unsafe { sys::sys_readlinkat(dirfd, path, buf, bufsiz) }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn __bind_raw(fd: i32, addr: *const u8, addrlen: u32) -> i32 {
-    todo("__bind_raw", "M9")
+    unsafe { sys::sys_bind(fd, addr, addrlen) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn __connect_raw(fd: i32, addr: *const u8, addrlen: u32) -> i32 {
-    todo("__connect_raw", "M9")
+    unsafe { sys::sys_connect(fd, addr, addrlen) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn __accept4_raw(fd: i32, addr: *mut u8, addrlen: *mut u32, flags: i32) -> i32 {
-    todo("__accept4_raw", "M9")
+    accept_with_flags(fd, addr, addrlen, flags)
 }
 
-#[allow(non_snake_case, unused_variables)]
+#[allow(non_snake_case)]
 pub fn Setitimer(which: i32, new: *const Itimerval, old: *mut Itimerval) -> i32 {
-    todo("Setitimer", "M6")
+    unsafe { sys::sys_setitimer(which, new as *const u8, old as *mut u8) as i32 }
 }
+
+// ─── M2: the file surface, continued ───────────────────────────────────
+
+// NUL-terminate a goish string for libSystem.
+fn __c_path(path: crate::string) -> alloc::vec::Vec<u8> {
+    let mut v = alloc::vec::Vec::with_capacity(path.as_bytes().len() + 1);
+    v.extend_from_slice(path.as_bytes());
+    v.push(0);
+    v
+}
+
+/// Go's `syscall.Openat`: `(fd, nil)`, `(-1, errno)`, or `(0, EINVAL)`
+/// for an embedded NUL before any call — the Linux wrapper's contract.
+#[allow(non_snake_case)]
+pub fn Openat<P: Into<crate::string>>(
+    dirfd: crate::int,
+    path: P,
+    flags: crate::int,
+    mode: u32,
+) -> (crate::int, crate::error) {
+    let path = path.into();
+    if path.as_bytes().contains(&0) {
+        return (0, EINVAL.into());
+    }
+    let path = __c_path(path);
+    let rc = unsafe { sys::sys_openat(dirfd as i32, path.as_ptr(), flags as i32, mode as i32) };
+    if rc < 0 {
+        return (-1, Errno(-(rc as i32)).into());
+    }
+    (rc as crate::int, crate::errors::nil)
+}
+
+/// `umask(2)` — set the file-creation mask, returning the previous one.
+#[allow(non_snake_case)]
+pub fn Umask(mask: crate::int) -> crate::int {
+    unsafe { sys::sys_umask(mask as u16) as crate::int }
+}
+
+/// File-type bits for `Mknod`'s mode argument, typed `i32` as on Linux.
+pub const S_IFIFO: i32 = 0o010000;
+pub const S_IFSOCK: i32 = 0o140000;
+
+/// `mknod(path, mode, dev)`. A FIFO goes through `mkfifo`: Darwin's
+/// `mknod(2)` is superuser-only for every node type, including the one
+/// an unprivileged process may make on Linux.
+#[allow(non_snake_case)]
+pub fn Mknod(path: *const u8, mode: i32, dev: u64) -> i32 {
+    unsafe {
+        if mode & 0o170000 == S_IFIFO {
+            sys::sys_mkfifo(path, (mode & 0o7777) as u16) as i32
+        } else {
+            sys::sys_mknod(path, mode as u16, dev as i32) as i32
+        }
+    }
+}
+
+/// `fsync(2)`. Returns 0 or `-errno`.
+#[allow(non_snake_case)]
+pub fn Fsync(fd: i32) -> i32 {
+    unsafe { sys::sys_fsync(fd) as i32 }
+}
+
+/// Read directory entries into `buf` as **`linux_dirent64` records**,
+/// which is what `os` parses on every target: `d_ino` u64, `d_off`
+/// i64, `d_reclen` u16, `d_type` u8, then the NUL-terminated name,
+/// each record padded to 8 bytes. Returns the bytes filled, 0 at the
+/// end, or `-errno`.
+///
+/// Darwin's records carry a `d_namlen` Linux's do not and pad to 4, so
+/// a Linux record is at most 8/7 the size of the Darwin one it came
+/// from. Reading at most three quarters of `buf` from the kernel
+/// therefore always fits after translation, and nothing read is ever
+/// dropped — which matters, because the directory offset has already
+/// moved past it.
+fn getdents64(fd: i32, buf: *mut u8, buflen: usize) -> i64 {
+    // The kernel wants room for at least one full `struct dirent`.
+    const DIRENT_MAX: usize = 1048;
+    let want = (buflen / 4 * 3).max(DIRENT_MAX);
+    let mut tmp: alloc::vec::Vec<u8> = alloc::vec![0u8; want];
+    let mut base: i64 = 0;
+    let n = unsafe { sys::sys_getdirentries64(fd, tmp.as_mut_ptr(), want, &mut base) };
+    if n <= 0 {
+        return n as i64;
+    }
+    let n = n as usize;
+    let (mut i, mut o) = (0usize, 0usize);
+    while i + 21 <= n {
+        let rec = &tmp[i..];
+        let reclen = u16::from_ne_bytes([rec[16], rec[17]]) as usize;
+        let namlen = u16::from_ne_bytes([rec[18], rec[19]]) as usize;
+        if reclen == 0 {
+            break;
+        }
+        let out = (19 + namlen + 1 + 7) & !7;
+        if o + out > buflen {
+            // Only reachable if `buflen` is below one Darwin dirent;
+            // report what fits rather than overrun the caller.
+            return if o == 0 { -(EINVAL.0 as i64) } else { o as i64 };
+        }
+        unsafe {
+            let d = buf.add(o);
+            core::ptr::write_bytes(d, 0, out);
+            core::ptr::copy_nonoverlapping(rec.as_ptr(), d, 8); // d_ino
+            core::ptr::copy_nonoverlapping(rec.as_ptr().add(8), d.add(8), 8); // d_off ← d_seekoff
+            core::ptr::copy_nonoverlapping((out as u16).to_ne_bytes().as_ptr(), d.add(16), 2);
+            *d.add(18) = rec[20]; // d_type — the DT_* values agree
+            core::ptr::copy_nonoverlapping(rec.as_ptr().add(21), d.add(19), namlen);
+        }
+        o += out;
+        i += reclen;
+    }
+    o as i64
+}
+
+// ─── M9: sockets and the epoll surface over kqueue ─────────────────────
+
+/// Set `O_NONBLOCK` and/or `FD_CLOEXEC` on `fd` — what Linux's
+/// `SOCK_NONBLOCK`/`SOCK_CLOEXEC` type bits do atomically. Also turns on
+/// `SO_NOSIGPIPE` for sockets: Darwin has no `MSG_NOSIGNAL`, and a
+/// write to a reset peer must come back as `EPIPE`, not a signal.
+fn apply_sock_flags(fd: i32, flags: i32) -> i32 {
+    unsafe {
+        if flags & SOCK_CLOEXEC != 0 {
+            let r = sys::sys_fcntl(fd, F_SETFD, FD_CLOEXEC as isize);
+            if r < 0 {
+                return r as i32;
+            }
+        }
+        if flags & SOCK_NONBLOCK != 0 {
+            let fl = sys::sys_fcntl(fd, F_GETFL, 0);
+            if fl < 0 {
+                return fl as i32;
+            }
+            let r = sys::sys_fcntl(fd, F_SETFL, fl | O_NONBLOCK as isize);
+            if r < 0 {
+                return r as i32;
+            }
+        }
+        let one: i32 = 1;
+        let _ = sys::sys_setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one as *const i32 as *const u8, 4);
+    }
+    0
+}
+
+/// `socket(2)` honouring Linux's `SOCK_NONBLOCK | SOCK_CLOEXEC` type
+/// bits, which Darwin does not have: the socket is made plain and the
+/// bits applied after — Go's darwin `sysSocket` (`net/sys_cloexec.go`).
+fn socket_with_flags(domain: i32, ty: i32, proto: i32) -> i32 {
+    let flags = ty & (SOCK_NONBLOCK | SOCK_CLOEXEC);
+    let fd = unsafe { sys::sys_socket(domain, ty & !(SOCK_NONBLOCK | SOCK_CLOEXEC), proto) } as i32;
+    if fd < 0 {
+        return fd;
+    }
+    let r = apply_sock_flags(fd, flags);
+    if r < 0 {
+        unsafe { sys::sys_close(fd) };
+        return r;
+    }
+    fd
+}
+
+/// `accept4(2)` as `accept` plus the flags — Go's darwin `accept`
+/// (`internal/poll/sys_cloexec.go`). Accepted sockets do not inherit
+/// `O_NONBLOCK` on Darwin either, so it is set explicitly.
+fn accept_with_flags(fd: i32, addr: *mut u8, len: *mut u32, flags: i32) -> i32 {
+    let nfd = unsafe { sys::sys_accept(fd, addr, len) } as i32;
+    if nfd < 0 {
+        return nfd;
+    }
+    let r = apply_sock_flags(nfd, flags);
+    if r < 0 {
+        unsafe { sys::sys_close(nfd) };
+        return r;
+    }
+    nfd
+}
+
+/// `getsockname(2)` into a caller buffer. 0 or `-errno`.
+#[allow(non_snake_case)]
+pub fn Getsockname(fd: i32, addr: *mut u8, addrlen: *mut u32) -> i32 {
+    unsafe { sys::sys_getsockname(fd, addr, addrlen) as i32 }
+}
+
+/// `getpeername(2)` into a caller buffer. 0 or `-errno`.
+#[allow(non_snake_case)]
+pub fn Getpeername(fd: i32, addr: *mut u8, addrlen: *mut u32) -> i32 {
+    unsafe { sys::sys_getpeername(fd, addr, addrlen) as i32 }
+}
+
+/// `sendto(2)`; `addr` may be null for a connected socket. Returns the
+/// byte count or `-errno`.
+#[allow(non_snake_case)]
+pub fn Sendto(fd: i32, buf: *const u8, len: usize, flags: i32, addr: *const u8, addrlen: u32) -> isize {
+    unsafe { sys::sys_sendto(fd, buf, len, flags, addr, addrlen) }
+}
+
+/// `recvfrom(2)` also reporting the sender. Returns the byte count or
+/// `-errno`.
+#[allow(non_snake_case)]
+pub fn RecvfromAddr(fd: i32, buf: *mut u8, len: usize, flags: i32, addr: *mut u8, addrlen: *mut u32) -> isize {
+    unsafe { sys::sys_recvfrom(fd, buf, len, flags, addr, addrlen) }
+}
+
+/// `socketpair(2)`, honouring the same type bits as `Socket`.
+#[allow(non_snake_case)]
+pub fn Socketpair(domain: i32, ty: i32, proto: i32, sv: &mut [i32; 2]) -> i32 {
+    let flags = ty & (SOCK_NONBLOCK | SOCK_CLOEXEC);
+    let r = unsafe {
+        sys::sys_socketpair(domain, ty & !(SOCK_NONBLOCK | SOCK_CLOEXEC), proto, sv.as_mut_ptr())
+    } as i32;
+    if r < 0 {
+        return r;
+    }
+    for &fd in sv.iter() {
+        let e = apply_sock_flags(fd, flags);
+        if e < 0 {
+            unsafe {
+                sys::sys_close(sv[0]);
+                sys::sys_close(sv[1]);
+            }
+            return e;
+        }
+    }
+    0
+}
+
+// The epoll surface, over kqueue. `runtime::netpoll` is written to
+// epoll's shape — register once, edge-triggered, wait for a batch —
+// and kqueue expresses the same thing with one filter per direction,
+// so the translation is local and the poller above it is shared:
+//
+//   EPOLLIN / EPOLLOUT   → EVFILT_READ / EVFILT_WRITE, one kevent each
+//   EPOLLET              → EV_CLEAR (edge-triggered)
+//   EPOLLONESHOT         → EV_ONESHOT
+//   `data`               ↔ `udata`, returned untouched
+//   EV_EOF on read       → EPOLLIN | EPOLLRDHUP | EPOLLHUP
+//   EV_EOF on write      → EPOLLOUT | EPOLLHUP
+//   EV_ERROR             → EPOLLERR
+//
+// Go's darwin netpoller registers exactly this pair with EV_CLEAR
+// (`runtime/netpoll_kqueue.go`, `netpollopen`), and wakes writers as
+// well as readers on a read-side EOF, which is what folding EPOLLHUP
+// into the read event does here. A kqueue event for the same fd in
+// each direction arrives as two `EpollEvent`s rather than one; the
+// poller handles each on its own.
+//
+// The netpoller's break is `EVFILT_USER` (see `NetpollWakeAdd`), which
+// Go uses on darwin in place of the eventfd (`netpoll_kqueue_event.go`).
+
+fn epoll_create1(flags: i32) -> i32 {
+    let kq = unsafe { sys::sys_kqueue() } as i32;
+    if kq >= 0 && flags & O_CLOEXEC != 0 {
+        unsafe { sys::sys_fcntl(kq, F_SETFD, FD_CLOEXEC as isize) };
+    }
+    kq
+}
+
+fn kev(fd: i32, filter: i16, flags: u16, udata: u64) -> sys::Kevent {
+    sys::Kevent { ident: fd as usize, filter, flags, fflags: 0, data: 0, udata: udata as usize }
+}
+
+fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: *mut EpollEvent) -> i32 {
+    let (want, data) = if event.is_null() {
+        (0, 0)
+    } else {
+        unsafe { ((*event).events, (*event).data) }
+    };
+    let mut fl = 0u16;
+    if want & EPOLLET != 0 {
+        fl |= sys::EV_CLEAR;
+    }
+    if want & EPOLLONESHOT != 0 {
+        fl |= sys::EV_ONESHOT;
+    }
+    // EV_RECEIPT reports each change's own result rather than draining
+    // pending events, so a DEL of a filter that was never added comes
+    // back as a per-change ENOENT the caller can ignore.
+    let mut ch: [sys::Kevent; 2] = Default::default();
+    match op {
+        EPOLL_CTL_ADD | EPOLL_CTL_MOD => {
+            for (i, (bit, filt)) in [(EPOLLIN, sys::EVFILT_READ), (EPOLLOUT, sys::EVFILT_WRITE)]
+                .into_iter()
+                .enumerate()
+            {
+                ch[i] = if want & bit != 0 {
+                    kev(fd, filt, sys::EV_ADD | sys::EV_RECEIPT | fl, data)
+                } else {
+                    kev(fd, filt, sys::EV_DELETE | sys::EV_RECEIPT, 0)
+                };
+            }
+        }
+        EPOLL_CTL_DEL => {
+            ch[0] = kev(fd, sys::EVFILT_READ, sys::EV_DELETE | sys::EV_RECEIPT, 0);
+            ch[1] = kev(fd, sys::EVFILT_WRITE, sys::EV_DELETE | sys::EV_RECEIPT, 0);
+        }
+        _ => return -(EINVAL.0),
+    }
+    let mut out: [sys::Kevent; 2] = Default::default();
+    let n = unsafe { sys::sys_kevent(epfd, &ch, &mut out, Some(0)) };
+    if n < 0 {
+        return n as i32;
+    }
+    for r in &out[..n as usize] {
+        // With EV_RECEIPT every entry carries EV_ERROR; `data` is the
+        // errno, 0 on success.
+        let e = r.data as i32;
+        if e == 0 {
+            continue;
+        }
+        let deleting = op == EPOLL_CTL_DEL
+            || (r.filter == sys::EVFILT_READ && want & EPOLLIN == 0)
+            || (r.filter == sys::EVFILT_WRITE && want & EPOLLOUT == 0);
+        if deleting && e == ENOENT.0 {
+            continue;
+        }
+        return -e;
+    }
+    0
+}
+
+fn epoll_pwait(epfd: i32, events: *mut EpollEvent, maxevents: i32, timeout_ms: i32) -> i32 {
+    const BATCH: usize = 128;
+    let max = (maxevents.max(0) as usize).min(BATCH);
+    let mut kevs: [sys::Kevent; BATCH] = [sys::Kevent::default(); BATCH];
+    let timeout = if timeout_ms < 0 { None } else { Some(timeout_ms as i64 * 1_000_000) };
+    let n = unsafe { sys::sys_kevent(epfd, &[], &mut kevs[..max], timeout) };
+    if n < 0 {
+        return n as i32;
+    }
+    for (i, k) in kevs[..n as usize].iter().enumerate() {
+        let mut bits = match k.filter {
+            sys::EVFILT_READ => {
+                if k.flags & sys::EV_EOF != 0 {
+                    EPOLLIN | EPOLLRDHUP | EPOLLHUP
+                } else {
+                    EPOLLIN
+                }
+            }
+            sys::EVFILT_WRITE => {
+                if k.flags & sys::EV_EOF != 0 {
+                    EPOLLOUT | EPOLLHUP
+                } else {
+                    EPOLLOUT
+                }
+            }
+            // The netpoller's break, reported as readable.
+            _ => EPOLLIN,
+        };
+        if k.flags & sys::EV_ERROR != 0 {
+            bits |= EPOLLERR;
+        }
+        unsafe {
+            *events.add(i) = EpollEvent { events: bits, data: k.udata as u64 };
+        }
+    }
+    n as i32
+}
+
+/// The netpoller's break: an `EVFILT_USER` event on `kq`, reported with
+/// `data` as its `EpollEvent.data`. `EV_CLEAR` so one trigger is one
+/// wakeup — Go's `addWakeupEvent` (`runtime/netpoll_kqueue_event.go`).
+#[allow(non_snake_case)]
+pub fn NetpollWakeAdd(kq: i32, data: u64) -> i32 {
+    let ev = sys::Kevent {
+        ident: NETPOLL_WAKE_IDENT,
+        filter: sys::EVFILT_USER,
+        flags: sys::EV_ADD | sys::EV_CLEAR,
+        fflags: 0,
+        data: 0,
+        udata: data as usize,
+    };
+    unsafe { sys::sys_kevent(kq, &[ev], &mut [], Some(0)) as i32 }
+}
+
+/// Trigger the break registered by `NetpollWakeAdd` — Go's
+/// `wakeNetpoll`. Retries `EINTR`, as Go does.
+#[allow(non_snake_case)]
+pub fn NetpollWakeTrigger(kq: i32) -> i32 {
+    let ev = sys::Kevent {
+        ident: NETPOLL_WAKE_IDENT,
+        filter: sys::EVFILT_USER,
+        flags: 0,
+        fflags: sys::NOTE_TRIGGER,
+        data: 0,
+        udata: 0,
+    };
+    loop {
+        let r = unsafe { sys::sys_kevent(kq, &[ev], &mut [], Some(0)) } as i32;
+        if r != -EINTR.0 {
+            return r;
+        }
+    }
+}
+
+/// Go's `kqIdent`: any value works, one that stands out in a trace is
+/// better.
+const NETPOLL_WAKE_IDENT: usize = 0xee1eb9f4;

@@ -1,7 +1,8 @@
 // Verifies the `goish_rt_text` link-section mechanism:
 //   1. The linker auto-generates `__start_goish_rt_text` and
 //      `__stop_goish_rt_text` symbols.
-//   2. Functions tagged with `#[link_section = "goish_rt_text"]` +
+//   2. Functions tagged with `#[link_section = "goish_rt_text"]` (the
+//      Mach-O spelling on macOS) +
 //      `#[inline(never)]` land inside the section's address range.
 //   3. Untagged functions (e.g., main itself) land *outside* it.
 //
@@ -15,7 +16,8 @@ use goish::runtime::rt_section;
 use goish::syscall;
 
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn tagged_function() -> u32 {
     // Force a non-trivial body so the function isn't optimized to nothing.
     let mut x = 0u32;

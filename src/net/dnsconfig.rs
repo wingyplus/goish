@@ -345,15 +345,8 @@ fn read_file_bytes(path: &str) -> Option<Vec<u8>> {
     if fd < 0 { return None; }
 
     let mut buf = vec![0u8; 8192];
-    let n = unsafe {
-        crate::syscall::syscall3(
-            crate::syscall::SYS_READ,
-            fd as usize,
-            buf.as_mut_ptr() as usize,
-            buf.len(),
-        ) as isize
-    };
-    let _ = unsafe { crate::syscall::syscall1(crate::syscall::SYS_CLOSE, fd as usize) };
+    let n = crate::syscall::Read(fd, buf.as_mut_ptr(), buf.len());
+    let _ = crate::syscall::Close(fd);
 
     if n <= 0 {
         return None;
@@ -362,17 +355,11 @@ fn read_file_bytes(path: &str) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// Get hostname via uname syscall, return bytes up to null terminator.
+/// Get hostname via uname(2), return bytes up to the NUL.
 fn get_hostname_bytes() -> Vec<u8> {
-    // Linux uname syscall (63 on x86-64).
-    // struct utsname has 6 fields each 65 bytes.
-    // nodename is at offset 65 bytes.
-    let mut buf = [0u8; 65 * 6];
-    unsafe {
-        crate::syscall::syscall1(crate::syscall::SYS_UNAME, buf.as_mut_ptr() as usize);
-    }
-    // nodename is the 2nd field
-    let nodename = &buf[65..130];
-    let end = nodename.iter().position(|&b| b == 0).unwrap_or(65);
+    let mut u = crate::syscall::Utsname::default();
+    let _ = crate::syscall::Uname(&mut u);
+    let nodename = &u.nodename[..];
+    let end = nodename.iter().position(|&b| b == 0).unwrap_or(nodename.len());
     nodename[..end].to_vec()
 }

@@ -550,6 +550,82 @@ pub const ENOSYS: Errno = Errno(38);
 pub const ENOTSUP: Errno = Errno(95);
 pub const EOPNOTSUPP: Errno = Errno(95);
 
+// Every other errno name the Darwin surface declares, so code spelling
+// them by name compiles on both. Values from Go's
+// `syscall/zerrors_linux_amd64.go` (the generic table; arm64 agrees).
+pub const E2BIG: Errno = Errno(7);
+pub const EADDRINUSE: Errno = Errno(98);
+pub const EADDRNOTAVAIL: Errno = Errno(99);
+pub const EAFNOSUPPORT: Errno = Errno(97);
+pub const EALREADY: Errno = Errno(114);
+pub const EBADF: Errno = Errno(9);
+pub const EBADMSG: Errno = Errno(74);
+pub const EBUSY: Errno = Errno(16);
+pub const ECANCELED: Errno = Errno(125);
+pub const ECHILD: Errno = Errno(10);
+pub const ECONNABORTED: Errno = Errno(103);
+pub const ECONNREFUSED: Errno = Errno(111);
+pub const ECONNRESET: Errno = Errno(104);
+pub const EDEADLK: Errno = Errno(35);
+pub const EDESTADDRREQ: Errno = Errno(89);
+pub const EDOM: Errno = Errno(33);
+pub const EDQUOT: Errno = Errno(122);
+pub const EFAULT: Errno = Errno(14);
+pub const EFBIG: Errno = Errno(27);
+pub const EHOSTDOWN: Errno = Errno(112);
+pub const EHOSTUNREACH: Errno = Errno(113);
+pub const EIDRM: Errno = Errno(43);
+pub const EILSEQ: Errno = Errno(84);
+pub const EINPROGRESS: Errno = Errno(115);
+pub const EIO: Errno = Errno(5);
+pub const EISCONN: Errno = Errno(106);
+pub const ELOOP: Errno = Errno(40);
+pub const EMLINK: Errno = Errno(31);
+pub const EMSGSIZE: Errno = Errno(90);
+pub const EMULTIHOP: Errno = Errno(72);
+pub const ENAMETOOLONG: Errno = Errno(36);
+pub const ENETDOWN: Errno = Errno(100);
+pub const ENETRESET: Errno = Errno(102);
+pub const ENETUNREACH: Errno = Errno(101);
+pub const ENOBUFS: Errno = Errno(105);
+pub const ENODATA: Errno = Errno(61);
+pub const ENODEV: Errno = Errno(19);
+pub const ENOEXEC: Errno = Errno(8);
+pub const ENOLCK: Errno = Errno(37);
+pub const ENOLINK: Errno = Errno(67);
+pub const ENOMEM: Errno = Errno(12);
+pub const ENOMSG: Errno = Errno(42);
+pub const ENOPROTOOPT: Errno = Errno(92);
+pub const ENOSPC: Errno = Errno(28);
+pub const ENOSR: Errno = Errno(63);
+pub const ENOSTR: Errno = Errno(60);
+pub const ENOTBLK: Errno = Errno(15);
+pub const ENOTCONN: Errno = Errno(107);
+pub const ENOTRECOVERABLE: Errno = Errno(131);
+pub const ENOTSOCK: Errno = Errno(88);
+pub const ENOTTY: Errno = Errno(25);
+pub const ENXIO: Errno = Errno(6);
+pub const EOVERFLOW: Errno = Errno(75);
+pub const EOWNERDEAD: Errno = Errno(130);
+pub const EPFNOSUPPORT: Errno = Errno(96);
+pub const EPIPE: Errno = Errno(32);
+pub const EPROTO: Errno = Errno(71);
+pub const EPROTONOSUPPORT: Errno = Errno(93);
+pub const EPROTOTYPE: Errno = Errno(91);
+pub const ERANGE: Errno = Errno(34);
+pub const EREMOTE: Errno = Errno(66);
+pub const EROFS: Errno = Errno(30);
+pub const ESHUTDOWN: Errno = Errno(108);
+pub const ESOCKTNOSUPPORT: Errno = Errno(94);
+pub const ESPIPE: Errno = Errno(29);
+pub const ESRCH: Errno = Errno(3);
+pub const ESTALE: Errno = Errno(116);
+pub const ETIME: Errno = Errno(62);
+pub const ETOOMANYREFS: Errno = Errno(109);
+pub const ETXTBSY: Errno = Errno(26);
+pub const EUSERS: Errno = Errno(87);
+pub const EXDEV: Errno = Errno(18);
+
 /// Open flags. Subset of `<fcntl.h>`.
 pub const O_RDONLY: i32 = 0;
 pub const O_CLOEXEC: i32 = 0o2_000_000;
@@ -632,6 +708,12 @@ pub fn Openat<P: Into<crate::string>>(
 #[allow(non_snake_case)]
 pub fn Close(fd: i32) -> i32 {
     unsafe { syscall1(SYS_CLOSE, fd as usize) as i32 }
+}
+
+/// `fsync(2)`. Returns 0 or `-errno`.
+#[allow(non_snake_case)]
+pub fn Fsync(fd: i32) -> i32 {
+    unsafe { syscall1(SYS_FSYNC, fd as usize) as i32 }
 }
 
 // ─── process family (os/exec) ─────────────────────────────────────────
@@ -1992,6 +2074,66 @@ pub fn __accept4_raw(fd: i32, addr: *mut u8, addrlen: *mut u32, flags: i32) -> i
         )
     };
     return r as i32; // goishlint:ignore GOISH005 — syscall ABI returns a machine word.
+}
+
+/// `getsockname(2)` into a caller buffer. 0 or `-errno`.
+#[allow(non_snake_case)]
+pub fn Getsockname(fd: i32, addr: *mut u8, addrlen: *mut u32) -> i32 {
+    unsafe { syscall3(SYS_GETSOCKNAME, fd as usize, addr as usize, addrlen as usize) as i32 }
+}
+
+/// `getpeername(2)` into a caller buffer. 0 or `-errno`.
+#[allow(non_snake_case)]
+pub fn Getpeername(fd: i32, addr: *mut u8, addrlen: *mut u32) -> i32 {
+    unsafe { syscall3(SYS_GETPEERNAME, fd as usize, addr as usize, addrlen as usize) as i32 }
+}
+
+/// `sendto(2)`; `addr` may be null for a connected socket. Returns the
+/// byte count or `-errno`.
+#[allow(non_snake_case)]
+pub fn Sendto(fd: i32, buf: *const u8, len: usize, flags: i32, addr: *const u8, addrlen: u32) -> isize {
+    unsafe {
+        syscall6(
+            SYS_SENDTO,
+            fd as usize,
+            buf as usize,
+            len,
+            flags as usize,
+            addr as usize,
+            addrlen as usize,
+        )
+    }
+}
+
+/// `recvfrom(2)` also reporting the sender. Returns the byte count or
+/// `-errno`.
+#[allow(non_snake_case)]
+pub fn RecvfromAddr(fd: i32, buf: *mut u8, len: usize, flags: i32, addr: *mut u8, addrlen: *mut u32) -> isize {
+    unsafe {
+        syscall6(
+            SYS_RECVFROM,
+            fd as usize,
+            buf as usize,
+            len,
+            flags as usize,
+            addr as usize,
+            addrlen as usize,
+        )
+    }
+}
+
+/// `socketpair(2)`. `ty` may carry `SOCK_NONBLOCK | SOCK_CLOEXEC`.
+#[allow(non_snake_case)]
+pub fn Socketpair(domain: i32, ty: i32, proto: i32, sv: &mut [i32; 2]) -> i32 {
+    unsafe {
+        syscall4(
+            SYS_SOCKETPAIR,
+            domain as usize,
+            ty as usize,
+            proto as usize,
+            sv.as_mut_ptr() as usize,
+        ) as i32
+    }
 }
 
 /// `listen(2)` — mark a socket as accepting connections. Returns

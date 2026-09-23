@@ -48,7 +48,7 @@ use crate::runtime::sched::{
 };
 use crate::runtime::spin::{raw_lock, SpinLock};
 use crate::syscall::{
-    self, ClockGettime, Clone, Futex, Timespec, CLONE_THREAD_FLAGS,
+    self, ClockGettime, Futex, Timespec,
     FUTEX_WAIT_PRIVATE, FUTEX_WAKE_PRIVATE, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ,
     PROT_WRITE,
 };
@@ -568,14 +568,5 @@ pub fn start_sysmon() {
         syscall::Write(syscall::STDERR, MSG.as_ptr(), MSG.len());
         syscall::Exit(2);
     }
-    let stack_top = unsafe { stack_base.add(SYSMON_STACK) };
-
-    unsafe {
-        Clone(
-            CLONE_THREAD_FLAGS,
-            stack_top,
-            sysmon_main,
-            storage.tls_base() as u64,
-        );
-    }
+    crate::runtime::sched::start_os_thread(storage, stack_base, SYSMON_STACK, sysmon_main);
 }

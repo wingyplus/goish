@@ -78,12 +78,13 @@ pub const SA_ONSTACK: u64 = 0x0001;
 pub const SA_RESTART: u64 = 0x0002;
 pub const SA_SIGINFO: u64 = 0x0040;
 
-/// **No Darwin analogue.** `SA_RESTORER` is the amd64-Linux mechanism
-/// for supplying a userspace `rt_sigreturn` trampoline; BSD `sigaction`
-/// has no `sa_restorer` field at all and libSystem's own trampoline
-/// returns from the handler. See `sigreturn_restorer` in
-/// `syscall_darwin.rs`.
-pub const SA_RESTORER: u64 = POISON_U64;
+/// **No Darwin analogue**, and so 0: `SA_RESTORER` is the amd64-Linux
+/// mechanism for supplying a userspace `rt_sigreturn` trampoline; BSD
+/// `sigaction` has no `sa_restorer` field at all and libSystem's own
+/// trampoline returns from the handler. Every `Sigaction` literal in
+/// `runtime/` ORs it in, so it must be a no-op bit rather than poison.
+/// See `sigreturn_restorer` in `syscall_darwin.rs`.
+pub const SA_RESTORER: u64 = 0;
 
 // ─── clock ids ─────────────────────────────────────────────────────────
 //
@@ -214,12 +215,15 @@ pub const AF_INET6: i32 = 30;
 pub const SOCK_STREAM: i32 = 1;
 pub const SOCK_DGRAM: i32 = 2;
 
-/// **No Darwin analogue.** Linux folds `SOCK_CLOEXEC` / `SOCK_NONBLOCK`
-/// into the `type` argument of `socket(2)` and `accept4(2)`; BSD has
-/// neither, and Go sets both with `fcntl` after the fact
-/// (`internal/poll/sys_cloexec.go`). M9's problem.
-pub const SOCK_CLOEXEC: i32 = POISON_I32;
-pub const SOCK_NONBLOCK: i32 = POISON_I32;
+/// **No Darwin analogue in the kernel.** Linux folds `SOCK_CLOEXEC` /
+/// `SOCK_NONBLOCK` into the `type` argument of `socket(2)` and
+/// `accept4(2)`; BSD has neither, and Go sets both with `fcntl` after
+/// the fact (`internal/poll/sys_cloexec.go`). goish's `Socket`,
+/// `Accept4` and `Socketpair` on this target strip these bits from
+/// `type` and do the same, so callers spell them as on Linux. High
+/// bits, clear of every real `SOCK_*` type.
+pub const SOCK_CLOEXEC: i32 = 0x1000_0000;
+pub const SOCK_NONBLOCK: i32 = 0x2000_0000;
 
 pub const IPPROTO_TCP: i32 = 6;
 pub const IPPROTO_UDP: i32 = 17;
@@ -330,14 +334,18 @@ const POISON_I32: i32 = -1;
 const POISON_U32: u32 = !0;
 const POISON_U64: u64 = !0;
 
-// futex(2) — Darwin's replacement is `pthread_cond_timedwait_relative_np`
-// (Go: `runtime/os_darwin.go:36-71`, `semacreate`/`semasleep`). M7.
-pub const FUTEX_PRIVATE_FLAG: i32 = POISON_I32;
-pub const FUTEX_WAIT_PRIVATE: i32 = POISON_I32;
-pub const FUTEX_WAKE_PRIVATE: i32 = POISON_I32;
+// futex(2) — no syscall of that name on Darwin, but `syscall::Futex`
+// implements these two operations over `__ulock_wait2`/`__ulock_wake`
+// (M7). The values are Linux's so the two surfaces spell them alike;
+// only `Futex` on this target interprets them.
+pub const FUTEX_PRIVATE_FLAG: i32 = 128;
+pub const FUTEX_WAIT_PRIVATE: i32 = 0 | FUTEX_PRIVATE_FLAG;
+pub const FUTEX_WAKE_PRIVATE: i32 = 1 | FUTEX_PRIVATE_FLAG;
 
 // arch_prctl(2) — x86-Linux only; unreachable on any arm64 target.
 pub const ARCH_SET_FS: i32 = POISON_I32;
+pub const ARCH_GET_GS: i32 = POISON_I32;
+pub const ARCH_SET_GS: i32 = POISON_I32;
 pub const ARCH_GET_FS: i32 = POISON_I32;
 
 // clone(2) — Darwin creates threads with `pthread_create`
@@ -351,19 +359,20 @@ pub const CLONE_SYSVSEM: u64 = POISON_U64;
 pub const CLONE_SETTLS: u64 = POISON_U64;
 pub const CLONE_THREAD_FLAGS: u64 = POISON_U64;
 
-// epoll — Darwin's netpoller is kqueue, with `EVFILT_USER` +
-// `NOTE_TRIGGER` for the wake (Go: `runtime/netpoll_kqueue_event.go`).
-// M9.
-pub const EPOLL_CTL_ADD: i32 = POISON_I32;
-pub const EPOLL_CTL_DEL: i32 = POISON_I32;
-pub const EPOLL_CTL_MOD: i32 = POISON_I32;
-pub const EPOLLIN: u32 = POISON_U32;
-pub const EPOLLOUT: u32 = POISON_U32;
-pub const EPOLLERR: u32 = POISON_U32;
-pub const EPOLLHUP: u32 = POISON_U32;
-pub const EPOLLRDHUP: u32 = POISON_U32;
-pub const EPOLLET: u32 = POISON_U32;
-pub const EPOLLONESHOT: u32 = POISON_U32;
+// epoll — no such kernel interface on Darwin, but `EpollCreate1`,
+// `EpollCtl` and `EpollPwait` translate these onto kqueue (see the note
+// above `epoll_create1` in `syscall_darwin.rs`). The values are
+// Linux's so both surfaces spell them alike.
+pub const EPOLL_CTL_ADD: i32 = 1;
+pub const EPOLL_CTL_DEL: i32 = 2;
+pub const EPOLL_CTL_MOD: i32 = 3;
+pub const EPOLLIN: u32 = 0x001;
+pub const EPOLLOUT: u32 = 0x004;
+pub const EPOLLERR: u32 = 0x008;
+pub const EPOLLHUP: u32 = 0x010;
+pub const EPOLLRDHUP: u32 = 0x2000;
+pub const EPOLLET: u32 = 1 << 31;
+pub const EPOLLONESHOT: u32 = 1 << 30;
 
 // eventfd(2) — no analogue; the kqueue wake replaces its role.
 pub const EFD_CLOEXEC: i32 = POISON_I32;
@@ -439,28 +448,127 @@ pub const FANOTIFY_METADATA_VERSION: u8 = 0x3;
 pub struct Errno(pub i32);
 
 impl Errno {
-    /// `(e Errno) Error() string` — Darwin errno → human name. Same
-    /// short table as the Linux side, **keyed by Darwin's numbers**:
-    /// 66 is `ENOTEMPTY` here and `ENOTEMPTY` is 39 there, so sharing
-    /// the match arms would have printed the wrong string for every
-    /// value above 34.
+    /// `(e Errno) Error() string` — the message for a Darwin errno.
+    /// Generated from Go's error table for this target
+    /// (`syscall/zerrors_darwin_arm64.go`, `var errors`), so the text
+    /// matches Go's byte for byte; keyed by Darwin's numbers, which is
+    /// why it cannot be shared with the Linux table.
     #[allow(non_snake_case)]
     pub fn Error(&self) -> crate::gostring::string {
-        crate::gostring::string::from_static(match self.0 {
+        let msg = match self.0 {
             1 => "operation not permitted",
             2 => "no such file or directory",
+            3 => "no such process",
             4 => "interrupted system call",
+            5 => "input/output error",
+            6 => "device not configured",
+            7 => "argument list too long",
+            8 => "exec format error",
+            9 => "bad file descriptor",
+            10 => "no child processes",
+            11 => "resource deadlock avoided",
+            12 => "cannot allocate memory",
             13 => "permission denied",
+            14 => "bad address",
+            15 => "block device required",
+            16 => "resource busy",
             17 => "file exists",
+            18 => "cross-device link",
+            19 => "operation not supported by device",
             20 => "not a directory",
             21 => "is a directory",
+            22 => "invalid argument",
+            23 => "too many open files in system",
+            24 => "too many open files",
+            25 => "inappropriate ioctl for device",
+            26 => "text file busy",
+            27 => "file too large",
+            28 => "no space left on device",
+            29 => "illegal seek",
+            30 => "read-only file system",
+            31 => "too many links",
+            32 => "broken pipe",
+            33 => "numerical argument out of domain",
+            34 => "result too large",
             35 => "resource temporarily unavailable",
+            36 => "operation now in progress",
+            37 => "operation already in progress",
+            38 => "socket operation on non-socket",
+            39 => "destination address required",
+            40 => "message too long",
+            41 => "protocol wrong type for socket",
+            42 => "protocol not available",
+            43 => "protocol not supported",
+            44 => "socket type not supported",
             45 => "operation not supported",
+            46 => "protocol family not supported",
+            47 => "address family not supported by protocol family",
+            48 => "address already in use",
+            49 => "can't assign requested address",
+            50 => "network is down",
+            51 => "network is unreachable",
+            52 => "network dropped connection on reset",
+            53 => "software caused connection abort",
+            54 => "connection reset by peer",
+            55 => "no buffer space available",
+            56 => "socket is already connected",
+            57 => "socket is not connected",
+            58 => "can't send after socket shutdown",
+            59 => "too many references: can't splice",
+            60 => "operation timed out",
+            61 => "connection refused",
+            62 => "too many levels of symbolic links",
+            63 => "file name too long",
+            64 => "host is down",
+            65 => "no route to host",
             66 => "directory not empty",
+            67 => "too many processes",
+            68 => "too many users",
+            69 => "disc quota exceeded",
+            70 => "stale NFS file handle",
+            71 => "too many levels of remote in path",
+            72 => "RPC struct is bad",
+            73 => "RPC version wrong",
+            74 => "RPC prog. not avail",
+            75 => "program version wrong",
+            76 => "bad procedure for program",
+            77 => "no locks available",
             78 => "function not implemented",
+            79 => "inappropriate file type or format",
+            80 => "authentication error",
+            81 => "need authenticator",
+            82 => "device power is off",
+            83 => "device error",
+            84 => "value too large to be stored in data type",
+            85 => "bad executable (or shared library)",
+            86 => "bad CPU type in executable",
+            87 => "shared library version mismatch",
+            88 => "malformed Mach-o file",
+            89 => "operation canceled",
+            90 => "identifier removed",
+            91 => "no message of desired type",
+            92 => "illegal byte sequence",
+            93 => "attribute not found",
+            94 => "bad message",
+            95 => "EMULTIHOP (Reserved)",
+            96 => "no message available on STREAM",
+            97 => "ENOLINK (Reserved)",
+            98 => "no STREAM resources",
+            99 => "not a STREAM",
+            100 => "protocol error",
+            101 => "STREAM ioctl timeout",
             102 => "operation not supported on socket",
-            _ => "errno",
-        })
+            103 => "policy not found",
+            104 => "state not recoverable",
+            105 => "previous owner died",
+            106 => "interface output queue is full",
+            _ => "",
+        };
+        if !msg.is_empty() {
+            return crate::gostring::string::from_static(msg);
+        }
+        crate::gostring::string::from_static("errno ")
+            + crate::strconv::Itoa(self.0 as crate::types::int)
     }
 
     // go: sdk 1.25.5 syscall/syscall_unix.go:138-140 Errno.Timeout
@@ -479,16 +587,33 @@ impl Errno {
         *self == EINTR || *self == EMFILE || *self == ENFILE || self.Timeout()
     }
 
-    /// `Is(target)` — value equality, as on Linux.
+    // go: sdk 1.25.5 syscall/syscall_unix.go:120-132 Errno.Is
+    /// Go: `func (e Errno) Is(target error) bool` — the `io/fs` and
+    /// `errors.ErrUnsupported` sentinels, as on Linux.
     #[allow(non_snake_case)]
-    pub fn Is(&self, target: Errno) -> bool {
-        *self == target
+    fn __is(&self, target: &crate::errors::error) -> bool {
+        if *target == crate::io::fs::ErrPermission {
+            return *self == EACCES || *self == EPERM;
+        }
+        if *target == crate::io::fs::ErrExist {
+            return *self == EEXIST || *self == ENOTEMPTY;
+        }
+        if *target == crate::io::fs::ErrNotExist {
+            return *self == ENOENT;
+        }
+        if *target == crate::errors::ErrUnsupported {
+            return *self == ENOSYS || *self == ENOTSUP || *self == EOPNOTSUPP;
+        }
+        false
     }
 }
 
 impl crate::errors::ErrorTrait for Errno {
     fn Error(&self) -> crate::gostring::string {
         Self::Error(self)
+    }
+    fn Is(&self, target: &crate::errors::error) -> bool {
+        self.__is(target)
     }
 }
 
@@ -514,36 +639,117 @@ impl PartialEq<crate::errors::error> for Errno {
     }
 }
 
-/// Common errno values, from the SDK's `<sys/errno.h>`. Six of the ten
-/// the Linux side declares have different numbers here.
-pub const EPERM: Errno = Errno(1);
-pub const ENOENT: Errno = Errno(2);
-pub const EINTR: Errno = Errno(4);
-pub const EBADF: Errno = Errno(9);
-pub const ENOMEM: Errno = Errno(12);
+/// Every errno Darwin defines, generated from Go's
+/// `syscall/zerrors_darwin_arm64.go` (which is itself generated from
+/// the SDK's `<sys/errno.h>`).
+pub const E2BIG: Errno = Errno(7);
 pub const EACCES: Errno = Errno(13);
-pub const EFAULT: Errno = Errno(14);
-pub const EEXIST: Errno = Errno(17);
-pub const ENOTDIR: Errno = Errno(20);
-pub const EISDIR: Errno = Errno(21);
-pub const EINVAL: Errno = Errno(22);
-pub const ENFILE: Errno = Errno(23);
-pub const EMFILE: Errno = Errno(24);
-pub const EPIPE: Errno = Errno(32);
-pub const ERANGE: Errno = Errno(34);
-/// **35 here, 11 on Linux** — the divergence the plan singled out.
+pub const EADDRINUSE: Errno = Errno(48);
+pub const EADDRNOTAVAIL: Errno = Errno(49);
+pub const EAFNOSUPPORT: Errno = Errno(47);
 pub const EAGAIN: Errno = Errno(35);
-/// Same value as `EAGAIN` on Darwin, as on Linux.
-pub const EWOULDBLOCK: Errno = Errno(35);
-pub const ETIMEDOUT: Errno = Errno(60);
-pub const EINPROGRESS: Errno = Errno(36);
-pub const ENOTSUP: Errno = Errno(45);
+pub const EALREADY: Errno = Errno(37);
+pub const EAUTH: Errno = Errno(80);
+pub const EBADARCH: Errno = Errno(86);
+pub const EBADEXEC: Errno = Errno(85);
+pub const EBADF: Errno = Errno(9);
+pub const EBADMACHO: Errno = Errno(88);
+pub const EBADMSG: Errno = Errno(94);
+pub const EBADRPC: Errno = Errno(72);
+pub const EBUSY: Errno = Errno(16);
+pub const ECANCELED: Errno = Errno(89);
+pub const ECHILD: Errno = Errno(10);
 pub const ECONNABORTED: Errno = Errno(53);
+pub const ECONNREFUSED: Errno = Errno(61);
 pub const ECONNRESET: Errno = Errno(54);
+pub const EDEADLK: Errno = Errno(11);
+pub const EDESTADDRREQ: Errno = Errno(39);
+pub const EDEVERR: Errno = Errno(83);
+pub const EDOM: Errno = Errno(33);
+pub const EDQUOT: Errno = Errno(69);
+pub const EEXIST: Errno = Errno(17);
+pub const EFAULT: Errno = Errno(14);
+pub const EFBIG: Errno = Errno(27);
+pub const EFTYPE: Errno = Errno(79);
+pub const EHOSTDOWN: Errno = Errno(64);
+pub const EHOSTUNREACH: Errno = Errno(65);
+pub const EIDRM: Errno = Errno(90);
+pub const EILSEQ: Errno = Errno(92);
+pub const EINPROGRESS: Errno = Errno(36);
+pub const EINTR: Errno = Errno(4);
+pub const EINVAL: Errno = Errno(22);
+pub const EIO: Errno = Errno(5);
+pub const EISCONN: Errno = Errno(56);
+pub const EISDIR: Errno = Errno(21);
+pub const ELAST: Errno = Errno(106);
+pub const ELOOP: Errno = Errno(62);
+pub const EMFILE: Errno = Errno(24);
+pub const EMLINK: Errno = Errno(31);
+pub const EMSGSIZE: Errno = Errno(40);
+pub const EMULTIHOP: Errno = Errno(95);
+pub const ENAMETOOLONG: Errno = Errno(63);
+pub const ENEEDAUTH: Errno = Errno(81);
+pub const ENETDOWN: Errno = Errno(50);
+pub const ENETRESET: Errno = Errno(52);
+pub const ENETUNREACH: Errno = Errno(51);
+pub const ENFILE: Errno = Errno(23);
+pub const ENOATTR: Errno = Errno(93);
 pub const ENOBUFS: Errno = Errno(55);
-pub const ENOTEMPTY: Errno = Errno(66);
+pub const ENODATA: Errno = Errno(96);
+pub const ENODEV: Errno = Errno(19);
+pub const ENOENT: Errno = Errno(2);
+pub const ENOEXEC: Errno = Errno(8);
+pub const ENOLCK: Errno = Errno(77);
+pub const ENOLINK: Errno = Errno(97);
+pub const ENOMEM: Errno = Errno(12);
+pub const ENOMSG: Errno = Errno(91);
+pub const ENOPOLICY: Errno = Errno(103);
+pub const ENOPROTOOPT: Errno = Errno(42);
+pub const ENOSPC: Errno = Errno(28);
+pub const ENOSR: Errno = Errno(98);
+pub const ENOSTR: Errno = Errno(99);
 pub const ENOSYS: Errno = Errno(78);
+pub const ENOTBLK: Errno = Errno(15);
+pub const ENOTCONN: Errno = Errno(57);
+pub const ENOTDIR: Errno = Errno(20);
+pub const ENOTEMPTY: Errno = Errno(66);
+pub const ENOTRECOVERABLE: Errno = Errno(104);
+pub const ENOTSOCK: Errno = Errno(38);
+pub const ENOTSUP: Errno = Errno(45);
+pub const ENOTTY: Errno = Errno(25);
+pub const ENXIO: Errno = Errno(6);
 pub const EOPNOTSUPP: Errno = Errno(102);
+pub const EOVERFLOW: Errno = Errno(84);
+pub const EOWNERDEAD: Errno = Errno(105);
+pub const EPERM: Errno = Errno(1);
+pub const EPFNOSUPPORT: Errno = Errno(46);
+pub const EPIPE: Errno = Errno(32);
+pub const EPROCLIM: Errno = Errno(67);
+pub const EPROCUNAVAIL: Errno = Errno(76);
+pub const EPROGMISMATCH: Errno = Errno(75);
+pub const EPROGUNAVAIL: Errno = Errno(74);
+pub const EPROTO: Errno = Errno(100);
+pub const EPROTONOSUPPORT: Errno = Errno(43);
+pub const EPROTOTYPE: Errno = Errno(41);
+pub const EPWROFF: Errno = Errno(82);
+pub const EQFULL: Errno = Errno(106);
+pub const ERANGE: Errno = Errno(34);
+pub const EREMOTE: Errno = Errno(71);
+pub const EROFS: Errno = Errno(30);
+pub const ERPCMISMATCH: Errno = Errno(73);
+pub const ESHLIBVERS: Errno = Errno(87);
+pub const ESHUTDOWN: Errno = Errno(58);
+pub const ESOCKTNOSUPPORT: Errno = Errno(44);
+pub const ESPIPE: Errno = Errno(29);
+pub const ESRCH: Errno = Errno(3);
+pub const ESTALE: Errno = Errno(70);
+pub const ETIME: Errno = Errno(101);
+pub const ETIMEDOUT: Errno = Errno(60);
+pub const ETOOMANYREFS: Errno = Errno(59);
+pub const ETXTBSY: Errno = Errno(26);
+pub const EUSERS: Errno = Errno(68);
+pub const EWOULDBLOCK: Errno = Errno(35);
+pub const EXDEV: Errno = Errno(18);
 
 // ─── added with upstream's os.Root, mode-bit and pprof surface ─────────
 //
@@ -564,3 +770,9 @@ pub const S_ISGID: u16 = 0o2000;
 pub const S_ISVTX: u16 = 0o1000;
 pub const ITIMER_PROF: i32 = 2;
 pub const SIGPROF: i32 = 27;
+
+// Measured against the SDK (`<fcntl.h>`, `<sys/time.h>`, `<signal.h>`).
+pub const O_NOCTTY: i32 = 0x20000;
+pub const ITIMER_REAL: i32 = 0;
+pub const ITIMER_VIRTUAL: i32 = 1;
+pub const SIGVTALRM: i32 = 26;

@@ -53,6 +53,7 @@ pub const SYS_BIND: usize = 200;
 pub const SYS_LISTEN: usize = 201;
 pub const SYS_GETSOCKNAME: usize = 204;
 pub const SYS_GETPEERNAME: usize = 205;
+pub const SYS_SOCKETPAIR: usize = 199;
 pub const SYS_SETSOCKOPT: usize = 208;
 pub const SYS_GETSOCKOPT: usize = 209;
 pub const SYS_FCNTL: usize = 25;

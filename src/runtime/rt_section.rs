@@ -25,21 +25,11 @@
 //     information, but it's not a code section". A section of runtime
 //     code that the linker does not believe is code is precisely the
 //     wrong footing for the M8 PC-range check that will read it.
-//   * ld64 generates no `__start_`/`__stop_` bound symbols at all. That
-//     convention is a System V rule about section names that happen to
-//     be valid C identifiers; it has no Mach-O counterpart. The bounds
-//     come from `getsectiondata(&_mh_execute_header, "__TEXT",
-//     "__goish_rt_text", &len)` instead — a runtime call against the
-//     loaded image rather than a link-time symbol.
-//
-// M1 does not make that call, because M1 installs no signal handlers:
-// `preempt::install()` is Linux-gated and the staged `__goish_rt0` on
-// Darwin does not reach it. `is_in_runtime()` therefore answers `false`
-// on this target, which is safe in the only sense that matters — the
-// question is "may I inject a preemption here", nothing asks it yet,
-// and a wrong `true` would be the dangerous direction. M8 replaces the
-// Darwin arm with the real `getsectiondata` walk, and must do so
-// *before* arming the SIGURG handler.
+//   * ld64 generates no `__start_`/`__stop_` bound symbols; its own
+//     spelling is `section$start$__TEXT$__goish_rt_text` and
+//     `section$end$…`, defined for any section it links. Those are
+//     link-time symbols like the ELF pair, so both targets answer
+//     `is_in_runtime()` the same way.
 //
 // **Why we need it**. The `m.locks` counter is an upper bound on
 // preempt-unsafe regions: every SpinLock guard bumps it. But there
@@ -86,14 +76,25 @@ pub fn is_in_runtime(pc: u64) -> bool {
     pc >= start && pc < end
 }
 
-/// Darwin: no section-bound symbols exist to compare against. See the
-/// header — the bounds need `getsectiondata`, nothing asks this
-/// question before M8, and `false` is the safe answer in the meantime.
+// ld64's spelling of `__start_`/`__stop_`: for any section it links,
+// it defines `section$start$SEG$SECT` and `section$end$SEG$SECT`. The
+// leading `\x01` tells LLVM to emit the name verbatim, without the
+// Mach-O `_` prefix — ld64 matches the undecorated form.
+#[cfg(target_os = "macos")]
+extern "C" {
+    #[link_name = "\x01section$start$__TEXT$__goish_rt_text"]
+    static __start_goish_rt_text: u8;
+    #[link_name = "\x01section$end$__TEXT$__goish_rt_text"]
+    static __stop_goish_rt_text: u8;
+}
+
+/// Darwin: the same test, over ld64's synthesized section bounds.
+/// The PIE slide moves the symbols with the code, so no adjustment.
 #[cfg(target_os = "macos")]
 #[inline]
-#[allow(unused_variables)]
 pub fn is_in_runtime(pc: u64) -> bool {
-    false
+    let (start, end, _) = section_bounds();
+    pc >= start && pc < end
 }
 
 /// Diagnostic counter: SIGURG firings the handler skipped due to
@@ -112,12 +113,13 @@ pub fn section_bounds() -> (u64, u64, u64) {
     (start, end, end.wrapping_sub(start))
 }
 
-/// Darwin: an empty range, matching `is_in_runtime`'s constant `false`.
-/// A test that asserts the section is populated will fail here, and
-/// should — that is exactly the M8 entry condition.
+/// Darwin: ld64's `section$start`/`section$end` for
+/// `__TEXT,__goish_rt_text`.
 #[cfg(target_os = "macos")]
 pub fn section_bounds() -> (u64, u64, u64) {
-    (0, 0, 0)
+    let start = unsafe { &__start_goish_rt_text as *const u8 as u64 };
+    let end = unsafe { &__stop_goish_rt_text as *const u8 as u64 };
+    (start, end, end.wrapping_sub(start))
 }
 
 /// Anchor function: ensures `goish_rt_text` is non-empty so the
