@@ -105,8 +105,8 @@ rustflags = [
     # `examples/<name>.dSYM`, which `symbolize/macho.rs` reads.
     #
     # `line-tables-only` because line tables are all the symboliser
-    # reads: each dSYM carries ~8 MB of DWARF instead of ~26 MB with
-    # full debuginfo, one per example binary. The cost is that lldb
+    # reads: each dSYM carries ~8 MB of DWARF instead of ~25 MB with
+    # full debuginfo (measured on `hello`), one per example binary. The cost is that lldb
     # shows no locals or types in a darwin debug build.
     #
     # Both override `[profile.dev]`'s `debug = "full"` and
