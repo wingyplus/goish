@@ -132,9 +132,8 @@ help:
 # The target is pinned explicitly — `--target` for `build`,
 # CARGO_BUILD_TARGET for `e2e-build`, whose script puts its own
 # arguments after `build` — rather than left to the `.cargo/config.toml`
-# pin: the repo's `.envrc` sets CARGO_BUILD_TARGET on Apple Silicon (so
-# plain `cargo run` works there), and that would otherwise turn these
-# into a Darwin build of every example.
+# pin: a CARGO_BUILD_TARGET in the caller's environment would otherwise
+# override it and turn these into a build for the wrong target.
 build:
 	$(CROSS_ENV) $(HOST_LINKER) $(if $(CROSS_ENV),$(CARGO_CROSS),$(CARGO)) build --target $(TARGET) --examples
 
