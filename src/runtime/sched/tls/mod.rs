@@ -14,6 +14,16 @@
 // returns unaligned pointers"). amd64 uses `fs`, planted with
 // `arch_prctl(2)`.
 //
+// `frame_pointer` and `stack_pointer` are `#[inline(always)]` in every
+// file, and that is load-bearing, not a micro-optimisation. Their
+// callers want *their own* register — `runtime::caller_rbp` is
+// deliberately a one-frame helper and its callers' `skip` counts assume
+// exactly that frame. A plain `#[inline]` is not honoured at opt-level
+// 0, so a debug build called out and read the *callee's* x29/rbp: every
+// `Callers`/`Caller` walk started one frame too deep, which CI caught as
+// five caller-attribution failures on linux/amd64 after this facade
+// replaced the inline `mov {}, rbp`.
+//
 // One property does NOT survive the port, and it is deliberate rather
 // than an oversight. On amd64 `acquirem`/`releasem` are a single
 // `lock add` / `lock xadd` against `fs:[off]`: the thread-pointer read

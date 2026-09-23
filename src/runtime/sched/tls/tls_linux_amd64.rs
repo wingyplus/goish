@@ -101,7 +101,7 @@ pub unsafe fn locks_dec<const OFF: usize>() -> u32 {
 }
 
 /// Current frame-pointer value, for the `releasem` underflow walker.
-#[inline]
+#[inline(always)]
 pub unsafe fn frame_pointer() -> u64 {
     let fp: u64;
     core::arch::asm!("mov {}, rbp", out(reg) fp, options(nomem, nostack));
@@ -110,7 +110,7 @@ pub unsafe fn frame_pointer() -> u64 {
 
 /// Current stack-pointer value, for `setup_main_g0`'s fallback when
 /// `/proc/self/maps` cannot be parsed.
-#[inline]
+#[inline(always)]
 pub unsafe fn stack_pointer() -> usize {
     let sp: usize;
     core::arch::asm!(

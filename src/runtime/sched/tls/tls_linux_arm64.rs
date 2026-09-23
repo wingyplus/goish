@@ -96,7 +96,7 @@ pub unsafe fn locks_dec<const OFF: usize>() -> u32 {
 /// AAPCS64 makes `x29` the frame pointer and mandates the frame record
 /// `[x29] = caller x29`, `[x29+8] = return address` — the same shape as
 /// x86's `[rbp]`/`[rbp+8]`, so the walker above this ports unchanged.
-#[inline]
+#[inline(always)]
 pub unsafe fn frame_pointer() -> u64 {
     let fp: u64;
     core::arch::asm!("mov {}, x29", out(reg) fp, options(nomem, nostack));
@@ -105,7 +105,7 @@ pub unsafe fn frame_pointer() -> u64 {
 
 /// Current stack-pointer value, for `setup_main_g0`'s fallback when
 /// `/proc/self/maps` cannot be parsed.
-#[inline]
+#[inline(always)]
 pub unsafe fn stack_pointer() -> usize {
     let sp: usize;
     core::arch::asm!(
