@@ -96,4 +96,24 @@ rustflags = [
 [target.aarch64-apple-darwin]
 rustflags = [
     "-C", "force-frame-pointers=yes",
+    # `runtime::symbolize` needs DWARF for `file:line`, and on Mach-O the
+    # linked executable never contains any: ld64 leaves only an N_OSO
+    # debug map pointing at the object files, and those are gone by run
+    # time (rustc deletes a binary crate's own `.o`s after linking; CI
+    # sets CARGO_INCREMENTAL=0, so no incremental cache holds them
+    # either). `packed` makes cargo run dsymutil and uplift
+    # `examples/<name>.dSYM`, which `symbolize/macho.rs` reads.
+    #
+    # `line-tables-only` because line tables are all the symboliser
+    # reads: each dSYM carries ~8 MB of DWARF instead of ~26 MB with
+    # full debuginfo, one per example binary. The cost is that lldb
+    # shows no locals or types in a darwin debug build.
+    #
+    # Both override `[profile.dev]`'s `debug = "full"` and
+    # `split-debuginfo = "off"` for this target only — rustc takes the
+    # last `-C` of each, and these come after the profile's. Setting
+    # RUSTFLAGS in the environment replaces this whole array (cargo
+    # does not merge them), which silently loses `file:line` on darwin.
+    "-C", "split-debuginfo=packed",
+    "-C", "debuginfo=line-tables-only",
 ]

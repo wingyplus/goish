@@ -827,3 +827,52 @@ pub unsafe fn sys_pthread_kill(thread: usize, sig: i32) -> isize {
 pub unsafe fn sys_pthread_sigmask(how: i32, set: *const u32, old: *mut u32) -> isize {
     direct_ret(pthread_sigmask(how, set, old))
 }
+
+// ─── M6: the symboliser's view of its own image ────────────────────────
+//
+// `runtime::symbolize::macho` reads the main executable's symbol table
+// out of the mapped image and its line table out of the dSYM bundle
+// beside the executable file. Neither of the two things it needs to
+// find them is a syscall:
+//
+//   * the image's own Mach-O header — `__mh_execute_header`, the symbol
+//     ld64 defines at the first byte of `__TEXT` in every executable.
+//     Its runtime address minus `__TEXT`'s link-time `vmaddr` is the
+//     ASLR slide, so no `_dyld_*` call is needed.
+//   * the executable's path. Go reads it from the `executable_path=`
+//     string the kernel places after `envp` (`runtime/os_darwin.go:477-487`,
+//     `sysargs`); goish's `main` is not guaranteed that vector's layout
+//     past `envp`, so it asks dyld with `_NSGetExecutablePath(3)`.
+
+#[link(name = "System")]
+extern "C" {
+    #[link_name = "\x01__mh_execute_header"]
+    static MH_EXECUTE_HEADER: u8;
+    fn _NSGetExecutablePath(buf: *mut u8, bufsize: *mut u32) -> i32;
+}
+
+/// The main executable's `mach_header_64`, as mapped. Valid for the
+/// life of the process.
+#[inline]
+pub fn sys_mh_execute_header() -> *const u8 {
+    // Taking a static's address reads nothing, so it is safe even for
+    // an `extern` one.
+    core::ptr::addr_of!(MH_EXECUTE_HEADER)
+}
+
+/// `_NSGetExecutablePath` into `buf`, NUL-terminated. Returns the
+/// length without the NUL, or `-1` when `buf` is too small (dyld then
+/// reports the size it needs; callers here pass `PATH_MAX` and do not
+/// retry).
+#[inline]
+pub unsafe fn sys_executable_path(buf: &mut [u8]) -> isize {
+    let mut size = buf.len() as u32;
+    if _NSGetExecutablePath(buf.as_mut_ptr(), &mut size) != 0 {
+        return -1;
+    }
+    let mut n = 0usize;
+    while n < buf.len() && buf[n] != 0 {
+        n += 1;
+    }
+    n as isize
+}

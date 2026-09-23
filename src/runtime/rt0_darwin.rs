@@ -42,12 +42,16 @@
 // Skipped, each with the milestone that turns it on:
 //
 //   `preempt::install`    M8
-//   `symbolize::init`     M6 — mmaps `/proc/self/exe` and parses ELF.
-//                              Permanently degraded here: DWARF is not
-//                              in a linked Mach-O image, so backtraces
-//                              will give `dladdr` symbol names and no
-//                              `file:line`.
 //   `segv::install`       M6
+//
+// `symbolize::init` runs, just before the hand-off to `main` as on
+// Linux, but it reads a different container: names from the mapped
+// image's `LC_SYMTAB`, and `file:line` from the dSYM bundle next to the
+// executable, because ld64 never puts DWARF in the linked image (see
+// `symbolize/macho.rs`). Without a dSYM — a build that overrides the
+// `split-debuginfo=packed` in `.cargo/config.toml`, or a binary copied
+// away from its bundle — frames still get function names, but no
+// `file:line`.
 //
 use crate::runtime::{args, flags, heap, mcentral, rand, sched};
 use crate::sys;
@@ -123,6 +127,11 @@ pub extern "C" fn __goish_rt0(
     // (M6). Signal handlers here are libc `sigaction` handlers entered
     // through libSystem's `_sigtramp`.
     crate::runtime::signal::install_boot_handlers();
+
+    // The symboliser, at the Linux boot's position: after the allocator
+    // (it builds Vecs) and before any user code can call
+    // `runtime::Caller` or print a panic backtrace.
+    crate::runtime::symbolize::init();
 
     // Hand off to the user's `main` on a goroutine, as Go's
     // `runtime.main` does and as the amd64 boot does: an 8 MiB lazily
