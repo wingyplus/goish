@@ -479,6 +479,10 @@ name = "preempt_smoke"
 path = "examples/preempt_smoke.rs"
 
 [[example]]
+name = "preempt_simd"
+path = "examples/preempt_simd.rs"
+
+[[example]]
 name = "preempt_sysmon"
 path = "examples/preempt_sysmon.rs"
 
