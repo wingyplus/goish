@@ -337,6 +337,18 @@ static LIVE_G_COUNT: AtomicUsize = AtomicUsize::new(0);
 #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
 #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn enqueue_runnable(g_ptr: NonNull<G>, next: bool) {
+    // On arm64 nothing can dispatch a G until M5 lands `gogo`: the
+    // staged boots run the user's main directly on g0 and start no
+    // workers. Before the thread pointer existed, reaching this line
+    // aborted loudly in `current_m()`; with it, the G would be queued
+    // and never run, and the caller's `while !done { Gosched() }` —
+    // `Gosched` is a no-op off-goroutine — would spin forever. Keep it
+    // an abort that names its milestone. M5 deletes this.
+    if cfg!(target_arch = "aarch64") {
+        let msg = b"goish: goroutines are not implemented on arm64 yet (M5): go! has no scheduler to run on\n";
+        crate::syscall::Write(crate::syscall::STDERR, msg.as_ptr(), msg.len());
+        crate::syscall::Exit(2);
+    }
     super::m::acquirem();
     let locked_m = unsafe { (*g_ptr.as_ptr()).locked_m.load(Ordering::Acquire) };
     if locked_m != 0 {

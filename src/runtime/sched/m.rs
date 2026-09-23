@@ -182,6 +182,13 @@ pub struct MStorage {
     /// read.
     #[cfg(debug_assertions)]
     pub first_lock_site: AtomicPtr<core::panic::Location<'static>>,
+    /// This M's `pthread_t` — the handle Darwin signals a thread
+    /// through (`pthread_kill`, Go's `signalM` in `runtime/os_darwin.go`),
+    /// where Linux uses the tid in `M::procid`. M6's crash path and M8's
+    /// preemption both need it. Last field, so `tls_self` stays at
+    /// offset 0.
+    #[cfg(target_os = "macos")]
+    pub pthread: AtomicUsize,
 }
 
 // MStorage holds a raw pointer in UnsafeCell. We assert thread-
@@ -206,6 +213,8 @@ impl MStorage {
             g0: AtomicPtr::new(core::ptr::null_mut()),
             #[cfg(debug_assertions)]
             first_lock_site: AtomicPtr::new(core::ptr::null_mut()),
+            #[cfg(target_os = "macos")]
+            pthread: AtomicUsize::new(0),
         }
     }
 
@@ -513,6 +522,10 @@ pub fn install_signal_stack() {
 /// After this call, every subsequent `current_m()` on the main
 /// thread reads `&MAIN_M.m` via a segment-relative load.
 pub fn setup_main_tls() {
+    // Darwin: allocate the TSD key the thread pointer lives in. Linux
+    // has a register to plant and nothing to allocate.
+    #[cfg(target_os = "macos")]
+    unsafe { tls::init() };
     // Preserve the platform FS base. In default builds Goish replaces
     // FS with its M slot. In `ffi-system-tls` builds FS is never
     // changed, so dynamically loaded foreign code keeps access to its
@@ -542,6 +555,8 @@ pub fn setup_main_tls() {
     // no equivalent entry, so we do it here.
     let tid = syscall::Gettid();
     MAIN_M.m.lock().procid.store(tid, Ordering::Release);
+    #[cfg(target_os = "macos")]
+    MAIN_M.pthread.store(unsafe { crate::sys::sys_pthread_self() }, Ordering::Release);
     // M18b-δ.3: register the main thread's per-thread alt signal
     // stack BEFORE `preempt::install` arms the SIGURG handler with
     // `SA_ONSTACK`. Without this, the very first SIGURG delivered to
@@ -572,21 +587,8 @@ pub fn setup_main_tls() {
 /// fallback is sized for default Linux `RLIMIT_STACK = 8 MiB`.
 pub fn setup_main_g0() {
     use crate::runtime::sched::g::G;
-    use crate::runtime::sched::stack::parse_main_stack_bounds;
 
-    let mut buf = [0u8; 16 * 1024];
-    let (base, mut size) = match parse_main_stack_bounds(&mut buf) {
-        Some(pair) => pair,
-        None => {
-            // Heuristic fallback: 8 MiB stack with current rsp inside.
-            let rsp: usize = unsafe { tls::stack_pointer() };
-            const FALLBACK_STACK: usize = 8 * 1024 * 1024;
-            // Round rsp up to nearest FALLBACK_STACK boundary as approximate top.
-            let top = (rsp + FALLBACK_STACK - 1) & !(FALLBACK_STACK - 1);
-            let base = top - FALLBACK_STACK;
-            (base as *mut u8, FALLBACK_STACK)
-        }
-    };
+    let (base, mut size) = main_stack_bounds();
 
     // The kernel writes argv/envp/auxv — pointer arrays AND their
     // strings — into the TOP of the main thread's [stack] mapping; the
@@ -611,6 +613,48 @@ pub fn setup_main_g0() {
     let g0_box = alloc::boxed::Box::new(G::new_g0(base, size));
     let g0_ptr: *mut G = alloc::boxed::Box::leak(g0_box) as *mut _;
     MAIN_M.g0.store(g0_ptr, Ordering::Release);
+}
+
+/// `(base, size)` of the main thread's OS stack, read from
+/// `/proc/self/maps`.
+#[cfg(target_os = "linux")]
+fn main_stack_bounds() -> (*mut u8, usize) {
+    use crate::runtime::sched::stack::parse_main_stack_bounds;
+
+    let mut buf = [0u8; 16 * 1024];
+    match parse_main_stack_bounds(&mut buf) {
+        Some(pair) => pair,
+        None => {
+            // Heuristic fallback: 8 MiB stack with current rsp inside.
+            let rsp: usize = unsafe { tls::stack_pointer() };
+            const FALLBACK_STACK: usize = 8 * 1024 * 1024;
+            // Round rsp up to nearest FALLBACK_STACK boundary as approximate top.
+            let top = (rsp + FALLBACK_STACK - 1) & !(FALLBACK_STACK - 1);
+            let base = top - FALLBACK_STACK;
+            (base as *mut u8, FALLBACK_STACK)
+        }
+    }
+}
+
+/// `(base, size)` of the main thread's OS stack, from libpthread.
+///
+/// There is no `/proc` to parse; `pthread_get_stackaddr_np` returns the
+/// stack's *top* and `pthread_get_stacksize_np` its size, so the base is
+/// the difference. The kernel's argv/envp/apple block sits at that top
+/// just as it does on Linux, so the argv cap in `setup_main_g0` applies
+/// unchanged. Checked rather than trusted — the main thread's reported
+/// size has been wrong on some macOS releases — by requiring the
+/// current `sp` to fall inside the range.
+#[cfg(target_os = "macos")]
+fn main_stack_bounds() -> (*mut u8, usize) {
+    let (top, size) = unsafe { crate::sys::sys_pthread_stack(crate::sys::sys_pthread_self()) };
+    let sp = unsafe { tls::stack_pointer() };
+    if size == 0 || top < size || sp >= top || sp < top - size {
+        const MSG: &[u8] = b"goish: setup_main_g0: libpthread's main-thread stack bounds do not contain sp\n";
+        syscall::Write(syscall::STDERR, MSG.as_ptr(), MSG.len());
+        syscall::Exit(2);
+    }
+    ((top - size) as *mut u8, size)
 }
 
 /// Pointer to the currently-running M's `SpinLock<M>`, read from the

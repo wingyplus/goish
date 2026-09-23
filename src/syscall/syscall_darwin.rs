@@ -522,9 +522,19 @@ pub fn Nanosleep(req: *const Timespec, rem: *mut Timespec) -> isize {
     todo("Nanosleep", "M3")
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// The calling thread's id, for `M::procid`.
+///
+/// Darwin has no `gettid`. This is `pthread_threadid_np`'s 64-bit
+/// system-wide id truncated to Linux's `pid_t` width — unique in
+/// practice for a process's lifetime, and **diagnostic only** here:
+/// Linux signals a thread through this number (`tgkill`), Darwin
+/// signals it through its `pthread_t` (`pthread_kill`, Go's `signalM`),
+/// which `MStorage::pthread` carries separately. Go stores
+/// `pthread_self()` in `m.procid` (`runtime/os_darwin.go`, `minit`);
+/// goish keeps `procid` an `i32` on every target and the handle apart.
+#[allow(non_snake_case)]
 pub fn Gettid() -> i32 {
-    todo("Gettid", "M4")
+    unsafe { sys::sys_thread_id() as i32 }
 }
 
 #[allow(non_snake_case, unused_variables)]
@@ -581,9 +591,14 @@ pub unsafe fn RtSigaction(
     todo("RtSigaction", "M6")
 }
 
-#[allow(non_snake_case, unused_variables)]
+/// `sigaltstack(2)`. Real from M4, ahead of the M6 handlers that use
+/// it, because `setup_main_tls` registers every M's alt stack as part
+/// of making the M — and it is one libSystem call. The struct is the
+/// BSD layout (`ztypes_darwin_arm64.rs`); callers that fill it by field
+/// name are portable.
+#[allow(non_snake_case)]
 pub unsafe fn Sigaltstack(new: *const SigaltstackT, old: *mut SigaltstackT) -> isize {
-    todo("Sigaltstack", "M6")
+    sys::sys_sigaltstack(new as *const u8, old as *mut u8)
 }
 
 #[allow(non_snake_case, unused_variables)]

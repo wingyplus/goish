@@ -85,6 +85,18 @@ extern "C" {
     fn mach_absolute_time() -> u64;
     fn mprotect(addr: *mut u8, len: usize, prot: i32) -> i32;
     fn madvise(addr: *mut u8, len: usize, advice: i32) -> i32;
+    fn sigaltstack(new: *const u8, old: *mut u8) -> i32;
+
+    // M4 — threads and the TSD slot goish's thread pointer lives in.
+    // `pthread_t` is an opaque pointer and `pthread_key_t` an
+    // `unsigned long`; both are `usize` here.
+    fn pthread_key_create(key: *mut usize, destructor: usize) -> i32;
+    fn pthread_getspecific(key: usize) -> usize;
+    fn pthread_setspecific(key: usize, value: usize) -> i32;
+    fn pthread_self() -> usize;
+    fn pthread_threadid_np(thread: usize, id: *mut u64) -> i32;
+    fn pthread_get_stackaddr_np(thread: usize) -> *mut u8;
+    fn pthread_get_stacksize_np(thread: usize) -> usize;
 }
 
 /// Read the calling thread's `errno`.
@@ -229,4 +241,70 @@ pub unsafe fn sys_madvise(addr: *mut u8, length: usize, advice: i32) -> isize {
 #[inline]
 pub unsafe fn sys_mach_absolute_time() -> u64 {
     mach_absolute_time()
+}
+
+/// `sigaltstack(2)`. The `stack_t` pointers are untyped here because
+/// the layout lives with the other generated tables in
+/// `syscall/ztypes_darwin_arm64.rs` — which is BSD's `ss_sp, ss_size,
+/// ss_flags`, not Linux's `ss_sp, ss_flags, ss_size`.
+#[inline]
+pub unsafe fn sys_sigaltstack(new: *const u8, old: *mut u8) -> isize {
+    let r = sigaltstack(new, old);
+    errno_ret(r as isize)
+}
+
+// ─── pthreads (M4) ─────────────────────────────────────────────────────
+//
+// All `direct_ret`-shaped except the three that cannot fail
+// (`pthread_self`, `pthread_getspecific`, the two `_np` stack queries),
+// which return their value as-is.
+
+/// `pthread_key_create(&key, NULL)`. Returns the key, or `-errno`.
+#[inline]
+pub unsafe fn sys_pthread_key_create() -> Result<usize, isize> {
+    let mut k: usize = 0;
+    let r = pthread_key_create(&mut k, 0);
+    if r == 0 { Ok(k) } else { Err(direct_ret(r)) }
+}
+
+/// `pthread_getspecific(key)` — the slow, library-mediated read of the
+/// slot `sched::tls` otherwise reads directly. Used once, to prove the
+/// two agree.
+#[inline]
+pub unsafe fn sys_pthread_getspecific(key: usize) -> usize {
+    pthread_getspecific(key)
+}
+
+/// `pthread_setspecific(key, value)`.
+#[inline]
+pub unsafe fn sys_pthread_setspecific(key: usize, value: usize) -> isize {
+    direct_ret(pthread_setspecific(key, value))
+}
+
+/// `pthread_self()` — the calling thread's `pthread_t`. This, not a
+/// kernel thread id, is what `pthread_kill` targets (Go's `signalM`).
+#[inline]
+pub unsafe fn sys_pthread_self() -> usize {
+    pthread_self()
+}
+
+/// `pthread_threadid_np(pthread_self(), &id)` — the system-wide 64-bit
+/// thread id `ps -M` and Instruments show. The closest Darwin has to
+/// Linux's `gettid`.
+#[inline]
+pub unsafe fn sys_thread_id() -> u64 {
+    let mut id: u64 = 0;
+    let _ = pthread_threadid_np(0, &mut id);
+    id
+}
+
+/// `(stack top, stack size)` of `thread`, as libpthread records them.
+/// The top is the *highest* address — Darwin's `stackaddr` is where the
+/// stack starts growing down from, not the base of the mapping.
+#[inline]
+pub unsafe fn sys_pthread_stack(thread: usize) -> (usize, usize) {
+    (
+        pthread_get_stackaddr_np(thread) as usize,
+        pthread_get_stacksize_np(thread),
+    )
 }
