@@ -35,6 +35,14 @@ pub use super::gobuf_asm_amd64::{swap_context, gogo, mcall_asm};
 #[cfg(target_arch = "aarch64")]
 pub use super::gobuf_asm_arm64::{swap_context, gogo, mcall_asm};
 
+// On arm64 the saved register file itself differs — the return address
+// lives in x30 rather than on the stack, and d8–d15 are callee-saved —
+// so the struct and the two layout helpers that write it come from the
+// arch file too. Everything below this point, down to
+// `goexit_trampoline`, is the amd64 half.
+#[cfg(target_arch = "aarch64")]
+pub use super::gobuf_asm_arm64::{Gobuf, make_context, make_context_gogo};
+
 
 /// Saved register file for a suspended G. Layout matches Go's
 /// `runtime.gobuf` semantically. Offsets 0x00..0x38 are the legacy
@@ -43,6 +51,7 @@ pub use super::gobuf_asm_arm64::{swap_context, gogo, mcall_asm};
 /// `naked_asm!`. M17b-ε β.1 adds `pc` at offset 0x38 for `gogo`'s
 /// JMP-based resume; legacy `swap_context` does not touch it (it
 /// resumes via RET-pops-PC-from-stack).
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Default)]
 pub struct Gobuf {
@@ -64,15 +73,24 @@ pub struct Gobuf {
 
 /// Field offsets — verified at compile time. Asm uses these as
 /// literal constants.
+#[cfg(target_arch = "x86_64")]
 pub const GOBUF_RSP: usize = 0x00;
+#[cfg(target_arch = "x86_64")]
 pub const GOBUF_RBP: usize = 0x08;
+#[cfg(target_arch = "x86_64")]
 pub const GOBUF_RBX: usize = 0x10;
+#[cfg(target_arch = "x86_64")]
 pub const GOBUF_R12: usize = 0x18;
+#[cfg(target_arch = "x86_64")]
 pub const GOBUF_R13: usize = 0x20;
+#[cfg(target_arch = "x86_64")]
 pub const GOBUF_R14: usize = 0x28;
+#[cfg(target_arch = "x86_64")]
 pub const GOBUF_R15: usize = 0x30;
-pub const GOBUF_PC: usize = 0x38;
+#[cfg(target_arch = "x86_64")]
+pub const GOBUF_PC:  usize = 0x38;
 
+#[cfg(target_arch = "x86_64")]
 const _: () = {
     assert!(core::mem::offset_of!(Gobuf, rsp) == GOBUF_RSP);
     assert!(core::mem::offset_of!(Gobuf, rbp) == GOBUF_RBP);
@@ -84,6 +102,7 @@ const _: () = {
     assert!(core::mem::offset_of!(Gobuf, pc) == GOBUF_PC);
 };
 
+#[cfg(target_arch = "x86_64")]
 impl Gobuf {
     pub const fn new() -> Self {
         Gobuf {
@@ -119,6 +138,7 @@ impl Gobuf {
 /// Safety: caller must have allocated a writable stack
 /// `[stack_base, stack_top)` of at least 32 bytes; `entry` must be
 /// a valid `extern "C" fn() -> !` address.
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn make_context(gobuf: &mut Gobuf, stack_top: usize, entry: extern "C" fn() -> !) {
     debug_assert!(stack_top % 16 == 0, "stack_top not 16-byte aligned");
 
@@ -154,7 +174,12 @@ pub unsafe fn make_context(gobuf: &mut Gobuf, stack_top: usize, entry: extern "C
 /// `[stack_base, stack_top)` of at least 16 bytes; `entry` must be a
 /// valid `extern "C" fn() -> !` address; `stack_top` must be 16-byte
 /// aligned.
-pub unsafe fn make_context_gogo(gobuf: &mut Gobuf, stack_top: usize, entry: extern "C" fn() -> !) {
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn make_context_gogo(
+    gobuf: &mut Gobuf,
+    stack_top: usize,
+    entry: extern "C" fn() -> !,
+) {
     debug_assert!(stack_top % 16 == 0, "stack_top not 16-byte aligned");
     let sp = stack_top - 8;
     // Trampoline catches the case where `entry` returns.
@@ -168,7 +193,7 @@ pub unsafe fn make_context_gogo(gobuf: &mut Gobuf, stack_top: usize, entry: exte
 /// have a scheduler to dispatch to, so this aborts the process. M16b
 /// replaces it with `runtime.goexit1` semantics — return the G to
 /// the scheduler.
-extern "C" fn goexit_trampoline() -> ! {
+pub(super) extern "C" fn goexit_trampoline() -> ! {
     const MSG: &[u8] = b"goish: sched: goroutine returned without scheduler\n";
     crate::syscall::Write(crate::syscall::STDERR, MSG.as_ptr(), MSG.len());
     crate::syscall::Exit(2);

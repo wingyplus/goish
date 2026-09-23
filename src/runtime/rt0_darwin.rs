@@ -1,7 +1,7 @@
 // runtime::rt0_darwin — the staged boot on macOS/arm64.
 //
 // The Linux `__goish_rt0` in `runtime/mod.rs` runs fifteen steps before
-// it hands off to the user's `main`. This one runs seven. It is a
+// it hands off to the user's `main`. This one runs eight. It is a
 // separate function rather than a third `#[cfg]` arm threaded through
 // that one because the difference is not a branch or two — it is which
 // two thirds of the sequence exist at all, and a reader of either file
@@ -18,7 +18,9 @@
 //   5. `heap::mheap_init` + `mcentral::mcentral_init` — the allocator.
 //   6. `sched::register_m_storage` + `sched::setup_main_g0` — the main
 //      M's `g0`, adopting the OS stack from libpthread's bounds.
-//   7. `__goish_main()`, then `sys::exit(0)`.
+//   7. `sched::bootstrap_ps(1)` + `acquirep` — one P, bound to the main M.
+//   8. `__goish_main()` on a goroutine, then `m_schedule_loop` on g0;
+//      the process exits when `main` returns (M5a).
 //
 // **Step 5 is more than the port plan budgeted for**, and the reason is
 // worth recording: the plan was written when `runtime/heap.rs` still
@@ -37,10 +39,10 @@
 //
 // Skipped, each with the milestone that turns it on:
 //
-//   `bootstrap_ps`        M5
-//   `bootstrap_workers`   M5 — `pthread_create` workers, which have
-//                              nothing to run until `gogo` exists.
-//   `start_sysmon`        M5 — a thread too; same reason.
+//   `bootstrap_workers`   M7 — `pthread_create` workers park on a
+//                              futex when idle; Darwin has none until
+//                              the `pthread_cond` replacement lands.
+//   `start_sysmon`        M7 — a thread too, and it sleeps the same way.
 //   SIGPIPE `SIG_IGN`     M6 — and Darwin has a better answer than the
 //                              process-wide ignore: `SO_NOSIGPIPE` is
 //                              per-socket. Nothing opens a socket yet.
@@ -52,16 +54,14 @@
 //                              `file:line`.
 //   `segv::install`       M6
 //
-// The load-bearing consequence, and the same one linux/arm64 carries at
-// M1: **the user's `main` runs directly on the OS stack, not on a
-// goroutine**, because putting it on one needs `gogo` (M5). So
-// `current_g()` is `None` throughout, and any blocking primitive —
-// channel send/recv, `WaitGroup::Wait`, a contended `Mutex` — fatals
-// with "outside of any goroutine" instead of parking, and `go!` itself
-// aborts naming M5 (`scheduler::enqueue_runnable`) rather than queueing
-// a G that nothing will ever run.
+// The load-bearing consequence of M5a: **one M, cooperative.** Goroutines
+// run, park and wake on the main thread, and `main` is a real goroutine
+// — but with no worker Ms and no sysmon, nothing runs in parallel, a
+// timer never fires, and a process whose goroutines are all blocked
+// reaches the idle-M park, whose futex aborts naming M7 rather than
+// hanging.
 //
-// M5 deletes the direct call; M6 deletes most of the list above.
+// M7 turns on workers and sysmon; M6 deletes most of the rest.
 
 use crate::runtime::{args, flags, heap, mcentral, rand, sched};
 use crate::sys;
@@ -115,13 +115,34 @@ pub extern "C" fn __goish_rt0(
     sched::register_m_storage(&sched::MAIN_M);
     sched::setup_main_g0();
 
-    // Hand off to the user's `main`. Directly, on this stack — see the
-    // file header for why, and for what it costs.
+    // One P, bound to the main M. One and not `num_cpus()`: there are
+    // no worker Ms yet (they park on a futex, which is M7 here), so a
+    // P nobody runs would only hold Gs that `runqsteal` must rescue.
+    // `GOMAXPROCS` reports what is true.
+    sched::bootstrap_ps(1);
+    if let Some(p0) = sched::p_at(0) {
+        sched::acquirep(p0);
+    }
+
+    // Hand off to the user's `main` on a goroutine, as Go's
+    // `runtime.main` does and as the amd64 boot does: an 8 MiB lazily
+    // committed reservation, and `exit(0)` when `main` returns, killing
+    // whatever else is still running.
     extern "C" {
         fn __goish_main();
     }
-    unsafe { __goish_main() };
+    sched::mark_dispatching();
+    sched::newproc_with_stack_at(
+        8 * 1024 * 1024,
+        file!(),
+        line!(),
+        alloc::boxed::Box::new(|| {
+            unsafe { __goish_main() };
+            unsafe { sys::sys_exit(0) }
+        }),
+    );
 
-    // Go: `exit(0)` at the foot of `runtime.main`.
-    unsafe { sys::sys_exit(0) }
+    // Enter the dispatch loop on g0. Never returns: the process ends in
+    // the closure above, or in the user's own `syscall::Exit`.
+    sched::m_schedule_loop()
 }

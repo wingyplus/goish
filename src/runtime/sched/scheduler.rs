@@ -313,6 +313,18 @@ fn has_local_or_global_work() -> bool {
 /// don't contend with newproc/dispatch on the runq lock.
 static LIVE_G_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// Set once by a boot that is about to enter the dispatch loop — see
+/// `mark_dispatching`. Until then `enqueue_runnable` refuses new Gs.
+static DISPATCHING: AtomicBool = AtomicBool::new(false);
+
+/// Declare that this process's boot runs the scheduler: the main
+/// goroutine is about to be spawned and `m_schedule_loop` entered.
+/// Called by `__goish_rt0` on every target whose boot does so, and by
+/// none that calls the user's main directly on g0.
+pub fn mark_dispatching() {
+    DISPATCHING.store(true, Ordering::Release);
+}
+
 /// Push a goroutine onto the runnable set, routing through the bound
 /// P's runq (M17b-β) when available, otherwise to the global runq.
 ///
@@ -337,15 +349,15 @@ static LIVE_G_COUNT: AtomicUsize = AtomicUsize::new(0);
 #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
 #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn enqueue_runnable(g_ptr: NonNull<G>, next: bool) {
-    // On arm64 nothing can dispatch a G until M5 lands `gogo`: the
-    // staged boots run the user's main directly on g0 and start no
-    // workers. Before the thread pointer existed, reaching this line
-    // aborted loudly in `current_m()`; with it, the G would be queued
-    // and never run, and the caller's `while !done { Gosched() }` —
-    // `Gosched` is a no-op off-goroutine — would spin forever. Keep it
-    // an abort that names its milestone. M5 deletes this.
-    if cfg!(target_arch = "aarch64") {
-        let msg = b"goish: goroutines are not implemented on arm64 yet (M5): go! has no scheduler to run on\n";
+    // A boot that never enters the dispatch loop — a staged port
+    // target calling the user's main directly on g0 — would queue this
+    // G and never run it, and a caller's `while !done { Gosched() }`
+    // (`Gosched` is a no-op off-goroutine) would spin forever. Abort
+    // loudly instead. A runtime flag rather than a `cfg`, so whichever
+    // target un-stages first turns its own guard off without touching
+    // the others'.
+    if !DISPATCHING.load(Ordering::Acquire) {
+        let msg = b"goish: goroutines are not available on this target's staged boot yet (M5): go! has no scheduler to run on\n";
         crate::syscall::Write(crate::syscall::STDERR, msg.as_ptr(), msg.len());
         crate::syscall::Exit(2);
     }

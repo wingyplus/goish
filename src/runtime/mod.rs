@@ -930,6 +930,8 @@ pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    sched::mark_dispatching();
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     sched::newproc_with_stack_at(
         8 * 1024 * 1024,
         file!(),
