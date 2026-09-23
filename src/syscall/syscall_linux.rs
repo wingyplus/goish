@@ -628,6 +628,17 @@ pub const EXDEV: Errno = Errno(18);
 
 /// Open flags. Subset of `<fcntl.h>`.
 pub const O_RDONLY: i32 = 0;
+// The rest of the open(2) flags `os` re-exports (Go: os/file.go's
+// O_* = syscall.O_*). Values from Go's syscall/zerrors_linux_amd64.go;
+// arm64 agrees.
+pub const O_WRONLY: i32 = 0x1;
+pub const O_RDWR: i32 = 0x2;
+pub const O_CREAT: i32 = 0x40;
+pub const O_EXCL: i32 = 0x80;
+pub const O_TRUNC: i32 = 0x200;
+pub const O_APPEND: i32 = 0x400;
+pub const O_SYNC: i32 = 0x101000;
+pub const F_DUPFD_CLOEXEC: i32 = 0x406;
 pub const O_CLOEXEC: i32 = 0o2_000_000;
 // go: sdk 1.25.5 syscall/zerrors_linux_amd64.go:626 O_DIRECTORY
 /// Fail with ENOTDIR unless the target is a directory.

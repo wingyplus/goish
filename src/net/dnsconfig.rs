@@ -334,7 +334,7 @@ fn is_ip(s: &str) -> bool {
 }
 
 /// Read a file via raw syscall (works in no_std).
-fn read_file_bytes(path: &str) -> Option<Vec<u8>> {
+pub(crate) fn read_file_bytes(path: &str) -> Option<Vec<u8>> {
     // Construct a null-terminated path
     let mut path_bytes: Vec<u8> = path.as_bytes().to_vec();
     path_bytes.push(0);

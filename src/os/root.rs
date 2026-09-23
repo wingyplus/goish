@@ -190,7 +190,7 @@ impl Root {
                     return super::root_openat::LastResult::Ok(fd);
                 }
                 let e = -fd;
-                if e == 40 || e == 20 {
+                if e == syscall::ELOOP.0 || e == syscall::ENOTDIR.0 {
                     return super::root_openat::LastResult::Symlink;
                 }
                 return super::root_openat::LastResult::Err(e);

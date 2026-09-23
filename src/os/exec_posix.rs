@@ -20,6 +20,7 @@ use crate::types::int;
 /// Rendering a signal by NAME is not cosmetic: "signal: killed" and
 /// "signal: 9" are the difference between an error a person can read
 /// and one they have to look up. goish printed the number.
+#[cfg(not(target_os = "macos"))]
 const signals: [&str; 32] = [
     "",
     "hangup",
@@ -53,6 +54,45 @@ const signals: [&str; 32] = [
     "I/O possible",
     "power failure",
     "bad system call",
+];
+
+/// darwin/arm64: the same table by Darwin's numbers (SIGUSR1 is 30
+/// here, SIGSYS 12), generated from Go's `syscall/zerrors_darwin_arm64.go`
+/// (`var signals`), which is what Go's `Signal.String` reads there.
+#[cfg(target_os = "macos")]
+const signals: [&str; 32] = [
+    "",
+    "hangup",
+    "interrupt",
+    "quit",
+    "illegal instruction",
+    "trace/BPT trap",
+    "abort trap",
+    "EMT trap",
+    "floating point exception",
+    "killed",
+    "bus error",
+    "segmentation fault",
+    "bad system call",
+    "broken pipe",
+    "alarm clock",
+    "terminated",
+    "urgent I/O condition",
+    "suspended (signal)",
+    "suspended",
+    "continued",
+    "child exited",
+    "stopped (tty input)",
+    "stopped (tty output)",
+    "I/O possible",
+    "cputime limit exceeded",
+    "filesize limit exceeded",
+    "virtual timer expired",
+    "profiling timer expired",
+    "window size changes",
+    "information request",
+    "user defined signal 1",
+    "user defined signal 2",
 ];
 
 // go: none — goish-only placement: Go's is `Signal.String`

@@ -37,7 +37,9 @@ use crate::types::{byte, int};
 use super::user::{Group, User};
 use super::lookup_unix::{lookup_group, lookup_group_id, lookup_user, lookup_user_id};
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(super) const USER_FILE: &str = "/etc/passwd";
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(super) const GROUP_FILE: &str = "/etc/group";
 // ─── Free fns: Lookup / LookupId / LookupGroup / LookupGroupId ───────
 

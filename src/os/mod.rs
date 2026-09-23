@@ -199,13 +199,15 @@ pub use crate::io::fs::{
 // as `int` (= i64) so port-side `var flag int = os.O_RDWR | os.O_TRUNC`
 // arithmetic stays width-uniform without per-callsite `as i32` casts.
 pub const O_RDONLY: int = syscall::O_RDONLY as int;
-pub const O_WRONLY: int = 0o1;
-pub const O_RDWR: int = 0o2;
-pub const O_CREATE: int = 0o100;
-pub const O_TRUNC: int = 0o1000;
-pub const O_APPEND: int = 0o2000;
-pub const O_EXCL: int = 0o200;
-pub const O_SYNC: int = 0o4010000;
+// From `syscall`, as Go's os/file.go does: the numbers are per-OS
+// (O_CREAT is 0x40 on Linux and 0x200 on Darwin).
+pub const O_WRONLY: int = syscall::O_WRONLY as int;
+pub const O_RDWR: int = syscall::O_RDWR as int;
+pub const O_CREATE: int = syscall::O_CREAT as int;
+pub const O_TRUNC: int = syscall::O_TRUNC as int;
+pub const O_APPEND: int = syscall::O_APPEND as int;
+pub const O_EXCL: int = syscall::O_EXCL as int;
+pub const O_SYNC: int = syscall::O_SYNC as int;
 
 pub const PathSeparator: u8 = b'/';
 pub const PathListSeparator: u8 = b':';

@@ -497,8 +497,7 @@ impl TCPConn {
     // with the netpoller, and the socket dies when the LAST handle
     // closes.
     pub(crate) fn __dup_handle(&self) -> (TCPConn, error) {
-        const F_DUPFD_CLOEXEC: i32 = 1030;
-        let nfd = syscall::Fcntl(self.fd, F_DUPFD_CLOEXEC, 0);
+        let nfd = syscall::Fcntl(self.fd, syscall::F_DUPFD_CLOEXEC, 0);
         if nfd < 0 {
             return (TCPConn::dead(), errno_error("dup", -nfd));
         }

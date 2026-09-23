@@ -870,6 +870,56 @@ impl IPAddr {
 /// them one after the other which mirrors Go's `single_request` path).
 ///
 /// Returns (addrs, cname_str, error).
+/// Go: `lookupStaticHost` + `goLookupIPFiles` (net/hosts.go:129-146,
+/// net/dnsclient_unix.go:589-600) — the addresses `/etc/hosts` gives
+/// `host`, in file order, and the canonical name (the first name on the
+/// line that listed it, absolute and lower-cased). Read per lookup
+/// rather than cached with Go's 5 s expiry: the file is a few hundred
+/// bytes and lookups are not on a hot path here. Zoned entries keep
+/// their address and drop the zone, which `IPAddr` cannot carry.
+pub(crate) fn lookup_static_host(host: &str) -> (Vec<IPAddr>, String) {
+    let data = match super::dnsconfig::read_file_bytes("/etc/hosts") {
+        Some(d) => d,
+        None => return (Vec::new(), String::new()),
+    };
+    let abs = |n: &str| -> String {
+        let mut k = n.to_ascii_lowercase();
+        if !k.ends_with('.') {
+            k.push('.');
+        }
+        k
+    };
+    let key = abs(host);
+    let mut out: Vec<IPAddr> = Vec::new();
+    let mut canonical = String::new();
+    for line in data.split(|&b| b == b'\n') {
+        let line = match line.iter().position(|&b| b == b'#') {
+            Some(i) => &line[..i],
+            None => line,
+        };
+        let line = core::str::from_utf8(line).unwrap_or("");
+        let f: Vec<&str> = line.split_ascii_whitespace().collect();
+        if f.len() < 2 {
+            continue;
+        }
+        let lit = f[0].split('%').next().unwrap_or("");
+        let ip = super::ParseIP(string::from(lit));
+        if ip.IsNil() {
+            continue;
+        }
+        if !f[1..].iter().any(|n| abs(n) == key) {
+            continue;
+        }
+        let v4 = ip.To4();
+        let raw: Vec<u8> = if !v4.IsNil() { v4.bytes.to_vec() } else { ip.bytes.to_vec() };
+        if canonical.is_empty() {
+            canonical = abs(f[1]);
+        }
+        out.push(IPAddr { ip: raw });
+    }
+    (out, canonical)
+}
+
 pub fn go_lookup_ip_cname_order(
     cfg: &DnsConfig,
     network: &str, // "ip", "ip4", "ip6", or "CNAME"
@@ -881,6 +931,23 @@ pub fn go_lookup_ip_cname_order(
         b'6' => &[dns::TypeAAAA],
         _ => &[dns::TypeA, dns::TypeAAAA],
     };
+
+    // Go: `order == hostLookupFilesDNS` — the hosts file answers first,
+    // and DNS is asked only when it has no entry
+    // (net/dnsclient_unix.go:609-621). Without this, `localhost` resolved
+    // only where the configured nameserver happens to answer for it.
+    let (static_addrs, canonical) = lookup_static_host(name);
+    let wanted: Vec<IPAddr> = static_addrs
+        .into_iter()
+        .filter(|a| match network_ip_version(network) {
+            b'4' => a.ip.len() == 4,
+            b'6' => a.ip.len() == 16,
+            _ => true,
+        })
+        .collect();
+    if !wanted.is_empty() {
+        return (wanted, canonical, errors::nil);
+    }
 
     let mut addrs: Vec<IPAddr> = Vec::new();
     let mut cname = String::new();

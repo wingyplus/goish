@@ -776,3 +776,8 @@ pub const O_NOCTTY: i32 = 0x20000;
 pub const ITIMER_REAL: i32 = 0;
 pub const ITIMER_VIRTUAL: i32 = 1;
 pub const SIGVTALRM: i32 = 26;
+
+// From Go's syscall/zerrors_darwin_arm64.go.
+pub const O_EXCL: i32 = 0x800;
+pub const O_SYNC: i32 = 0x80;
+pub const F_DUPFD_CLOEXEC: i32 = 0x43;
