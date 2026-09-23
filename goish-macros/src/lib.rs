@@ -774,6 +774,13 @@ pub fn reflect(attr: TokenStream, item: TokenStream) -> TokenStream {
     // a codec is right here — asking every consumer to register its own
     // generated structs would be a footgun whose symptom is a runtime
     // error on one field of one message. Registration is idempotent.
+    //
+    // On Mach-O `.init_array` is not a valid section specifier, and there
+    // is no ELF-style walk to find it anyway, so the registration is
+    // simply not placed there on macOS — the same M10 gap `goish::import!`
+    // has (see `__run_pkg_inits` in the goish crate). The type still
+    // compiles and marshals directly; only marshaling it while held in a
+    // `goish::Any` needs the explicit `RegisterAnyMarshaler::<T>()` there.
     let reg_fn = format!("__goish_reg_any_marshal_{}", parsed.name);
     let reg_slot = format!("__GOISH_REG_ANY_MARSHAL_{}", parsed.name.to_uppercase());
     let _ = write!(
@@ -785,7 +792,7 @@ pub fn reflect(attr: TokenStream, item: TokenStream) -> TokenStream {
          #[used]\n\
          #[doc(hidden)]\n\
          #[allow(non_upper_case_globals)]\n\
-         #[link_section = \".init_array\"]\n\
+         #[cfg_attr(not(target_os = \"macos\"), link_section = \".init_array\")]\n\
          static {reg_slot}: extern \"C\" fn() = {reg_fn};\n",
         reg_fn = reg_fn,
         reg_slot = reg_slot,

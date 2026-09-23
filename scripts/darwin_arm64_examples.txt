@@ -122,5 +122,20 @@ os_getgroups_smoke
 os_proc_identity_smoke
 testing_b_timer_smoke
 testing_init_flags_smoke
-time_compare_smoke
-time_smoke
+
+# M5a — the arm64 context switch: goroutines run, park and wake on the
+# single main M, and main itself is a goroutine.
+chan_unbuffered
+chan_buffered
+sched_swap
+sched_fp_callee_saved
+
+# Taken back off at M5a — the one place this list shrank, recorded so it
+# is not mistaken for noise: `time.Sleep` from a goroutine parks on
+# sysmon's timer heap, and since M5a `main` IS a goroutine, while sysmon
+# waits on the futex replacement (M7). Both examples call `Sleep` from
+# main and now abort "syscall::Futex is not implemented … (M7)". They
+# passed at M3 only because `Sleep` off-goroutine falls back to a
+# blocking `nanosleep`. Restore with M7, or with a single-M timer path.
+#   time_smoke
+#   time_compare_smoke
