@@ -28,7 +28,9 @@ use crate::runtime::preempt::{UcontextT, REG_RBP, REG_RIP, REG_RSP};
 use crate::runtime::sched::G;
 use crate::syscall;
 
-const PAGE: usize = 4096;
+/// Width of the "just below the stack" window a fault must land in to
+/// count as overflow — the guard, whose size is the kernel page.
+const PAGE: usize = crate::runtime::sched::GUARD_SIZE;
 
 // ─── Spawn-site side table ────────────────────────────────────────────
 //

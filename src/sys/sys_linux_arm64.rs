@@ -28,6 +28,17 @@
 
 use core::arch::asm;
 
+/// The kernel's page size — the granule `mmap`, `mprotect` and
+/// `madvise` operate on. 4 KiB, the value this backend's callers
+/// hardcoded before the Darwin port gave it a name (see the 16 KiB
+/// counterpart in `sys_darwin_arm64.rs`).
+///
+/// arm64 Linux kernels can be built with 16 KiB or 64 KiB pages; the
+/// supported target is the 4 KiB build (measured on the colima VM,
+/// kernel 6.8). A 16K/64K kernel is the Darwin problem on Linux, and
+/// this constant is where it would be answered.
+pub const PHYS_PAGE_SIZE: usize = 4096;
+
 /// 0-argument syscall — used by `fork(2)` and `getpid(2)`.
 #[inline]
 pub unsafe fn syscall0(n: usize) -> isize {

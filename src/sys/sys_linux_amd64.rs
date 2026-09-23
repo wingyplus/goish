@@ -20,6 +20,12 @@
 
 use core::arch::asm;
 
+/// The kernel's page size — the granule `mmap`, `mprotect` and
+/// `madvise` operate on. 4 KiB, the value this backend's callers
+/// hardcoded before the Darwin port gave it a name (see the 16 KiB
+/// counterpart in `sys_darwin_arm64.rs`).
+pub const PHYS_PAGE_SIZE: usize = 4096;
+
 /// 0-argument syscall — used by `fork(2)` and `getpid(2)`.
 #[inline]
 pub unsafe fn syscall0(n: usize) -> isize {
