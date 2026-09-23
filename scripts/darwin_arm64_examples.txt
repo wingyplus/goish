@@ -109,3 +109,18 @@ os_setenv_unsetenv_smoke
 testing_fstest_smoke
 time_format_smoke
 tabwriter_smoke
+
+# M3 — time, identity, entropy, CPU count. Each of these aborted on an
+# M3 wrapper after M4a (`ClockGettime`, `SchedGetaffinity`, `Uname`,
+# `Getuid`, `Getgroups`) and passes now.
+http_cookiejar_smoke
+http_time_smoke
+log_print_fatalln_smoke
+log_smoke
+os_env_smoke
+os_getgroups_smoke
+os_proc_identity_smoke
+testing_b_timer_smoke
+testing_init_flags_smoke
+time_compare_smoke
+time_smoke

@@ -429,6 +429,48 @@ amd64 smoke before relying on it. `goishlint` did not run either (closed source)
 
 ---
 
+### M3 on darwin/arm64 — time, identity, entropy, CPU count, landed 2026-09-23
+
+Real now: `ClockGettime`, `Nanosleep`, `Getpid`/`Getppid`, `Getuid`/`Geteuid`/`Getgid`/`Getegid`,
+`Getgroups`, `Uname`, `Kill`, `Getrandom` (over `arc4random_buf`, Go's darwin `readRandom`), and
+`num_cpus` (over `sysctl({CTL_HW, HW_NCPU})`, Go's darwin `getCPUCount` — `SchedGetaffinity`
+stays an abort, since Darwin has no affinity mask to fake). `rand::init` runs in the Darwin boot.
+`make run-darwin`: **74/74**. Checked directly against the host: `Nanosleep(200ms)` then
+`time.Since` reads 204–210 ms; `Unix()` matches `date +%s`; `NumCPU` = `hw.ncpu` = 12.
+
+**Three findings.**
+
+1. **Darwin's `CLOCK_MONOTONIC` is not Linux's, and passing it through would have been wrong
+   silently.** It counts time asleep: measured **~463,882 s (5.4 days) ahead** of
+   `CLOCK_UPTIME_RAW` on a laptop that had slept. Go's `nanotime` does not count sleep on either
+   OS — darwin's `nanotime1` reads `mach_absolute_time` scaled by the timebase. `CLOCK_UPTIME_RAW`
+   is exactly that clock with the scaling applied (measured within 166 ns of the hand
+   conversion — the generated table's comment, which said "without the unit conversion", was
+   wrong and is fixed). `runtime::sysmon::NANOTIME_CLOCK` names the right id per OS, and both
+   monotonic readers (`monotonic_ns`, `time::Now`) use it; `ClockGettime` itself stays a truthful
+   wrapper over Darwin's ids.
+
+2. **"numer == denom == 1 on Apple Silicon" was wrong.** Go's comment says it is *common*; the
+   port notes had upgraded that to a fact about this hardware. Measured: **125/3** — a 24 MHz
+   counter, 41.67 ns per tick. Nothing read ticks as nanoseconds (`cputicks` wants seed bits
+   only), so no bug shipped, but the next person to reach for `mach_absolute_time` for a duration
+   would have been off by ~42×. Both comments are corrected.
+
+3. **M5 is now the wall, by a wide margin.** Of the 80 examples that stopped at an M3 wrapper
+   after M4a, 11 pass, **52 now stop at `go!` (M5)**, 13 at `runtime.Callers` (M6 —
+   `symbolize::init` does not run, so `testing` panics "zero callers found"), 1 at M2.
+   `aes_smoke`, `asn1_smoke` and `atomic_value_smoke` are among the 52. Across all 215 examples
+   still failing: M5 132, M9 sockets 24, M6 15+2, M2 file surface 20.
+
+Not a bug, recorded so nobody chases it: `testing_benchmark_run_smoke` timed out in the 20 s
+probe; run to completion it is 8/8 in 19.7 s — CPU-bound benchmark ramping in a debug build.
+
+**Gates.** darwin/arm64 native, 74/74. linux/amd64 and linux/arm64: compile and link only (docker
+still unavailable). The one Linux-visible change is `time::Now` reading
+`NANOTIME_CLOCK` — `CLOCK_MONOTONIC` on Linux, the same id as before.
+
+---
+
 ## Verified facts that shape the plan
 
 | Claim | Verdict | Source |
@@ -626,7 +668,7 @@ unchanged**.
 | M | Goal | Main risk | Go anchors |
 |---|---|---|---|
 | **2 — Memory & 16 KiB pages** | ~~mheap + mcentral online~~ (**done in M1** — see finding 2 above; dlmalloc is gone, so both need only `Mmap`). What is left: `madvise` semantics, the page-size inversion, guard-page arithmetic | The kernel/allocator page ordering **inverts**: Linux has kernel 4 KiB < Go page 8 KiB, Darwin has kernel 16 KiB > Go page 8 KiB, so one Go page is *half* a kernel page and `madvise`/`mprotect` cannot act on it. Introduce a `PHYS_PAGE_SIZE` distinct from `PAGE_SHIFT=13` (keep the latter — Go uses 8 KiB everywhere) and scavenge only in multiples of it, collapsing the three hardcoded `4096` copies (`sched/stack.rs:144`, `segv.rs:31`, `grow.rs:344`). `MADV_DONTNEED` at `stack.rs:386` — the mechanism the million-goroutine demo rests on — neither releases nor zeroes on Darwin. `MAP_NORESERVE` doesn't exist. Second-order: a 64 KiB goroutine stack now loses 16 KiB (25%) to its guard page. **`mheap/consts.rs` needs no change** — `heapAddrBits` is 48 and `arenaBaseOffset` is 0 on arm64. | `runtime/malloc.go`, `runtime/mem_darwin.go` |
-| **3 — Time, entropy, CPU count** | `time.Now`, `nanotime`, PRNG seed, `num_cpus` | `rdtsc` (`runtime/rand.rs:31-44`) → `mrs cntvct_el0` or `mach_absolute_time`; `Getrandom` → `arc4random_buf`; `SchedGetaffinity` → `sysctlbyname("hw.logicalcpu")` | `runtime/sys_darwin.go`, `runtime/os_darwin.go` (`getncpu`, `readRandom`) |
+| **3 — Time, entropy, CPU count** (**done 2026-09-23** — see above) | `time.Now`, `nanotime`, PRNG seed, `num_cpus` | `rdtsc` (`runtime/rand.rs:31-44`) → `mrs cntvct_el0` or `mach_absolute_time`; `Getrandom` → `arc4random_buf`; `SchedGetaffinity` → `sysctlbyname("hw.logicalcpu")` | `runtime/sys_darwin.go`, `runtime/os_darwin.go` (`getncpu`, `readRandom`) |
 | **4 — Threads + TLS** | N worker Ms; `current_m()` works | `acquirem`/`releasem` (`sched/m.rs:285-322`) are deliberately `lock add`/`lock xadd` on `fs:[…]` so the RMW cannot land on the wrong M after a SIGURG-induced migration; TSD cannot reproduce that single-instruction property and the invariant needs re-establishing. Ship `pthread_getspecific` first; the 3-instruction `MRS TPIDRRO_EL0` fast path is a separate, deferrable step whose entry condition is *read `tls_arm64.s` first*. **Store each M's `pthread_t` in `MStorage`** — M6 and M8 both need it. `setup_main_g0` gets *simpler*: `pthread_get_stackaddr_np` replaces the `/proc/self/maps` parse. | `runtime/os_darwin.go:233-258`, `runtime/tls_arm64.s:21-26` |
 | **5 — Context switch (AAPCS64)** | goroutines run; `go!` works | Return address is in **x30, not on the stack**, so `swap_context`'s "`ret` pops PC off the target stack" design and `gogo`'s red-zone-avoiding `jmp` both need restructuring, not transliterating. **`d8`–`d15` are callee-saved** — SysV has no equivalent, so this is strictly more work than the amd64 version, and omitting them corrupts float state silently. **Never touch x18.** No red zone. | `runtime/asm_arm64.s` (`gogo`, `mcall`, `systemstack`), `runtime/stubs_arm64.go` |
 | **6 — Signals: SIGSEGV + backtrace** | crash → backtrace, guard-page detection | `uc_mcontext` is a pointer; BSD `sigaction` has **no `sa_restorer`**, so `SigreturnTrampoline` (which hardcodes `rt_sigreturn=15`) is Linux-only. **DWARF is not in the linked Mach-O image** — it lives in `.o` files and `.dSYM` bundles, so `runtime/symbolize/` (which mmaps `/proc/self/exe` and parses ELF) degrades to `dladdr()`: symbol name, no `file:line`. A permanent fidelity regression on Darwin; document rather than build a dSYM parser. | `runtime/signal_arm64.go`, `runtime/defs_darwin_arm64.go` |
