@@ -68,16 +68,13 @@ fn main() {
     // Recover the assigned port via getsockname.
     let mut got = syscall::SockaddrIn::loopback(0);
     let mut got_len: u32 = core::mem::size_of::<syscall::SockaddrIn>() as u32;
-    // No getsockname helper yet — call via the syscall module's
-    // syscall3 using SYS_GETSOCKNAME=51.
-    let r = unsafe {
-        syscall::syscall3(
-            syscall::SYS_GETSOCKNAME,
-            srv as usize,
-            &mut got as *mut _ as usize,
-            &mut got_len as *mut _ as usize,
-        )
-    };
+    // Through the wrapper: on Linux it is the same getsockname(2), and
+    // Darwin has no raw syscall entry point to reach it any other way.
+    let r = syscall::Getsockname(
+        srv,
+        &mut got as *mut _ as *mut u8,
+        &mut got_len as *mut u32,
+    );
     check(r == 0, b"getsockname failed\n");
     let port = got.port_host();
     check(port != 0, b"got port == 0\n");

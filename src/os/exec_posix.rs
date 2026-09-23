@@ -509,7 +509,15 @@ impl Process {
 // serves both accessors here.
 /// A wait4 Timeval as a Duration.
 fn timeval_to_duration(tv: Timeval) -> crate::time::Duration {
-    return crate::time::Duration(tv.Sec * 1_000_000_000 + tv.Usec * 1_000);
+    // Darwin's `timeval` is `{ int64 sec; int32 usec; pad[4] }` (Go:
+    // syscall/ztypes_darwin_arm64.go lines 26-30), and wait4 does not
+    // promise to zero the padding, so only the low half of `Usec` is
+    // the kernel's. Little-endian puts it first in the i64.
+    #[cfg(target_os = "macos")]
+    let usec = i64::from(tv.Usec as i32);
+    #[cfg(not(target_os = "macos"))]
+    let usec = tv.Usec;
+    return crate::time::Duration(tv.Sec * 1_000_000_000 + usec * 1_000);
 }
 
 // go: none — goish-only placement: Go's `FindProcess` is

@@ -1,7 +1,7 @@
 // conn_drop_no_leak — verify Drop on Conn / Listener releases the
 // kernel fd. We open and drop 1000 client+server pairs without
-// calling Close explicitly; afterwards we check our own fd table
-// in /proc/self/fd and assert the count hasn't grown unboundedly.
+// calling Close explicitly; afterwards we count our own open fds
+// (see `count_fds`) and assert the count hasn't grown unboundedly.
 //
 // Pre-M27h, every dropped Conn/Listener leaked one fd permanently.
 // 1000 cycles would leave 2000+ fds open and eventually hit
@@ -30,61 +30,29 @@ fn check(cond: bool, msg: &[u8]) {
     }
 }
 
-/// Count how many entries are in /proc/self/fd. Uses getdents64 to
-/// avoid pulling in std::fs.
+/// Count this process's open fds by asking the kernel about each
+/// candidate: `fcntl(fd, F_GETFL)` succeeds on an open fd and fails
+/// with EBADF on a closed one.
+///
+/// This used to list /proc/self/fd with raw `openat`/`getdents64`
+/// numbers — x86_64's (257/217/3), so on arm64 Linux it issued the
+/// wrong syscalls, and Darwin has neither /proc nor a raw syscall
+/// entry point. The probe answers the same question through a wrapper
+/// every target has, and is exact rather than a directory listing that
+/// also counts its own fd.
+///
+/// The bound: fds are allocated lowest-first, so the leak this test
+/// exists to catch (2000+ fds after 1000 cycles) lands well inside it.
 fn count_fds() -> usize {
-    // SYS_OPENAT (= 257) on x86_64.
-    const SYS_OPENAT: usize = 257;
-    const SYS_GETDENTS64: usize = 217;
-    const SYS_CLOSE: usize = 3;
-    const AT_FDCWD: i32 = -100;
-    const O_RDONLY: i32 = 0;
-    const O_DIRECTORY: i32 = 0o200000;
-    let path = b"/proc/self/fd\0";
-    let dfd = unsafe {
-        syscall::syscall3(
-            SYS_OPENAT,
-            AT_FDCWD as usize,
-            path.as_ptr() as usize,
-            (O_RDONLY | O_DIRECTORY) as usize,
-        )
-    } as i32;
-    if dfd < 0 {
-        return 0;
-    }
-    let mut buf = [0u8; 4096];
+    const PROBE_LIMIT: i32 = 8192;
     let mut total = 0usize;
-    loop {
-        let n = unsafe {
-            syscall::syscall3(
-                SYS_GETDENTS64,
-                dfd as usize,
-                buf.as_mut_ptr() as usize,
-                buf.len(),
-            )
-        };
-        if n <= 0 {
-            break;
+    let mut fd = 0;
+    while fd < PROBE_LIMIT {
+        if syscall::Fcntl(fd, syscall::F_GETFL, 0) >= 0 {
+            total += 1;
         }
-        // Walk linux_dirent64 entries: u64 d_ino, i64 d_off, u16 d_reclen, u8 d_type, char d_name[].
-        let mut off = 0usize;
-        while off < n as usize {
-            let d_reclen = u16::from_le_bytes([buf[off + 16], buf[off + 17]]) as usize;
-            // Filter "." and ".." which getdents always returns.
-            let name_start = off + 19;
-            let name0 = buf[name_start];
-            let name1 = if d_reclen > 20 {
-                buf[name_start + 1]
-            } else {
-                0
-            };
-            if !(name0 == b'.' && (name1 == 0 || name1 == b'.')) {
-                total += 1;
-            }
-            off += d_reclen;
-        }
+        fd += 1;
     }
-    let _ = unsafe { syscall::syscall1(SYS_CLOSE, dfd as usize) };
     total
 }
 

@@ -876,3 +876,42 @@ pub unsafe fn sys_executable_path(buf: &mut [u8]) -> isize {
     }
     n as isize
 }
+
+// ─── os/exec: fork, exec, wait, pipe ───────────────────────────────────
+//
+// The process-creation primitives, as Go's darwin `syscall` package
+// binds them (`syscall/zsyscall_darwin_arm64.go` — `libc_fork` :1784,
+// `libc_wait4` :54, `libc_pipe` :379). None of them is variadic, so the
+// plain declarations are correct under Apple's arm64 variadic rule.
+//
+// `_exit` is the one deliberate departure: Go's child exits through
+// `libc_exit` (`exit(3)`, :1812, reached from `exec_libc2.go:292`).
+// `exit(3)` runs `atexit` handlers and flushes stdio, and in a child
+// forked from a multi-threaded process any lock those take may be held
+// by a thread that did not survive the fork. POSIX lists `_exit`, not
+// `exit`, as async-signal-safe — the only kind of call permitted
+// between `fork` and `exec` — so the child uses it. The parent's own
+// whole-process exit stays on `exit(3)` (`sys_exit` above), as Go's.
+
+#[link(name = "System")]
+extern "C" {
+    fn fork() -> i32;
+    fn _exit(code: i32) -> !;
+    fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32;
+    fn wait4(pid: i32, status: *mut i32, options: i32, rusage: *mut u8) -> i32;
+    fn pipe(fds: *mut i32) -> i32;
+}
+
+libc_ret! {
+    sys_fork = fork() -> i32;
+    sys_execve = execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32;
+    sys_wait4 = wait4(pid: i32, status: *mut i32, options: i32, rusage: *mut u8) -> i32;
+    sys_pipe = pipe(fds: *mut i32) -> i32;
+}
+
+/// `_exit(2)` — leave a forked child without running `atexit` handlers
+/// or touching stdio. See the note at the top of this section.
+#[inline]
+pub unsafe fn sys_exit_child(code: i32) -> ! {
+    _exit(code)
+}

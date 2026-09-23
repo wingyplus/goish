@@ -32,10 +32,10 @@
 //   M8  async preemption
 //   M9  kqueue netpoller, sockets
 //
-// `os/exec` is marked as such rather than with a number — it is out of
-// scope for the whole ladder (see the plan's "Explicitly out of scope";
-// `fork` + exec is translatable, `pipe2` is not, and fork-in-a-threaded-
-// process is stricter here).
+// `os/exec` sat outside the ladder (the plan's "Explicitly out of
+// scope": `fork` + exec is translatable, `pipe2` is not, and
+// fork-in-a-threaded-process is stricter here). It is implemented now,
+// in its own section at the end of this file.
 
 use crate::sys;
 
@@ -352,26 +352,6 @@ pub fn Close(fd: i32) -> i32 {
     unsafe { sys::sys_close(fd) as i32 }
 }
 
-#[allow(non_snake_case, unused_variables)]
-pub fn Fork() -> i32 {
-    todo("Fork", "os/exec")
-}
-
-#[allow(non_snake_case, unused_variables)]
-pub fn Execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32 {
-    todo("Execve", "os/exec")
-}
-
-#[allow(non_snake_case, unused_variables)]
-pub fn Wait4(pid: i32, status: *mut i32, options: i32, rusage: *mut u8) -> i32 {
-    todo("Wait4", "os/exec")
-}
-
-#[allow(non_snake_case, unused_variables)]
-pub fn Dup3(oldfd: i32, newfd: i32, flags: i32) -> i32 {
-    todo("Dup3", "os/exec")
-}
-
 #[allow(non_snake_case)]
 pub fn Fstat(fd: i32, out: &mut Stat_t) -> i32 {
     unsafe { sys::sys_fstat(fd, out as *mut Stat_t as *mut u8) as i32 }
@@ -479,11 +459,6 @@ pub fn Link(oldpath: *const u8, newpath: *const u8) -> i32 {
 #[allow(non_snake_case)]
 pub fn Truncate(path: *const u8, length: i64) -> i32 {
     unsafe { sys::sys_truncate(path, length) as i32 }
-}
-
-#[allow(non_snake_case, unused_variables)]
-pub fn Pipe2(pipefd: &mut [i32; 2], flags: i32) -> i32 {
-    todo("Pipe2", "os/exec")
 }
 
 #[allow(non_snake_case)]
@@ -1437,4 +1412,260 @@ const NETPOLL_WAKE_IDENT: usize = 0xee1eb9f4;
 #[allow(non_snake_case)]
 pub fn PthreadKill(thread: usize, sig: i32) -> isize {
     unsafe { sys::sys_pthread_kill(thread, sig) }
+}
+
+// ─── os/exec: Fork, Execve, Wait4, Pipe2, Dup3 ─────────────────────────
+//
+// Go's darwin process creation is `syscall/exec_libc2.go`: libc `fork`,
+// then only libc calls known to be safe in the child (`dup2`, `fcntl`,
+// `chdir`, `execve`, `write`, `exit`) until the exec. goish's child side
+// lives in `os::exec::Cmd::Start` and is shared with Linux; what differs
+// per platform is below, behind the same names and signatures that
+// `syscall_linux.rs` exports.
+//
+// Why fork+exec and not `posix_spawn`: the shared child path does a
+// `chdir` for `Cmd.Dir`, rewires fds 0-2 from pipes, and reports the
+// exec errno back through a CLOEXEC pipe. `posix_spawn` expresses the
+// first only through the non-portable
+// `posix_spawn_file_actions_addchdir_np`, and the last not at all — it
+// returns the errno itself, so the error pipe would become a second,
+// Darwin-only error path. Keeping Go's shape keeps one child path for
+// both targets.
+
+/// Go's `syscall.ForkLock`, reduced to what Darwin needs it for.
+///
+/// Linux creates every fd with its close-on-exec bit already set
+/// (`pipe2`, `dup3`, `SOCK_CLOEXEC`). Darwin has no `pipe2`, so `Pipe2`
+/// below makes the pipe and *then* sets `FD_CLOEXEC`. A fork on another
+/// thread in that window hands the child a pipe end it never closes,
+/// and whoever reads the other end waits for an EOF that arrives only
+/// when that unrelated child exits. Go closes the window with this
+/// lock: fd creation that is not atomic takes it shared (`os.Pipe`
+/// calls `syscall.Pipe` under `ForkLock.RLock`), and `forkExec` takes
+/// it exclusive across the fork (`acquireForkLock`,
+/// `syscall/forkpipe.go:24-26`).
+///
+/// A spin lock rather than a parking mutex, because both critical
+/// sections are a handful of syscalls that never block, and every
+/// holder runs under `acquirem` so it cannot be preempted off its M
+/// while a waiter spins — the GOMAXPROCS=1 deadlock a parking-free
+/// lock would otherwise have. Bit 31 is the writer; the low bits count
+/// readers.
+static FORK_LOCK: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+const FORK_LOCK_WRITER: u32 = 1 << 31;
+
+fn fork_lock_rlock() {
+    use core::sync::atomic::Ordering;
+    crate::runtime::sched::acquirem();
+    loop {
+        let v = FORK_LOCK.load(Ordering::Relaxed);
+        if v & FORK_LOCK_WRITER == 0
+            && FORK_LOCK
+                .compare_exchange_weak(v, v + 1, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+        {
+            return;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+fn fork_lock_runlock() {
+    FORK_LOCK.fetch_sub(1, core::sync::atomic::Ordering::Release);
+    crate::runtime::sched::releasem();
+}
+
+fn fork_lock_lock() {
+    use core::sync::atomic::Ordering;
+    crate::runtime::sched::acquirem();
+    // Claim the writer bit first so no new reader gets in, then wait
+    // for the ones already inside to leave.
+    while FORK_LOCK.fetch_or(FORK_LOCK_WRITER, Ordering::Acquire) & FORK_LOCK_WRITER != 0 {
+        core::hint::spin_loop();
+    }
+    while FORK_LOCK.load(Ordering::Acquire) != FORK_LOCK_WRITER {
+        core::hint::spin_loop();
+    }
+}
+
+fn fork_lock_unlock() {
+    FORK_LOCK.fetch_and(!FORK_LOCK_WRITER, core::sync::atomic::Ordering::Release);
+    crate::runtime::sched::releasem();
+}
+
+/// `<sys/signal.h>`: `SIG_SETMASK` is 3, `SIG_DFL`/`SIG_IGN` are the
+/// handler values 0 and 1, and `NSIG` is 32 (signals 1-31).
+const SIG_SETMASK_DARWIN: i32 = 3;
+const SIG_DFL_DARWIN: usize = 0;
+const SIG_IGN_DARWIN: usize = 1;
+const NSIG_DARWIN: i32 = 32;
+
+/// `fork(2)` through libSystem — 0 in the child, the child's pid in the
+/// parent, `-errno` on failure.
+///
+/// Go: `syscall/exec_libc2.go:82-95` (the fork) and `:147-149` (the
+/// child's `runtime_AfterForkInChild`), with the two runtime hooks from
+/// `runtime/proc.go`:
+///
+///  * `syscall_runtime_BeforeFork` (`proc.go:5165-5180`) blocks every
+///    signal across the fork "so that the child does not run a signal
+///    handler before exec if a signal is sent to the process group"
+///    (go.dev/issue/18600). goish's handlers — SIGURG preemption, the
+///    SIGSEGV reporter, `os/signal` — all assume a live scheduler, and
+///    the child has one thread and no scheduler.
+///  * `syscall_runtime_AfterForkInChild` (`proc.go:5228-5245`) then,
+///    in the child, puts every caught signal back to `SIG_DFL`
+///    (`clearSignalHandlers`, `runtime/signal_unix.go:268-276`) and only
+///    then restores the mask. The order matters: exec preserves the
+///    mask, so it must be restored, and restoring it with goish's
+///    handlers still installed would let a pending signal run one.
+///    Ignored signals stay ignored, as in Go — `SIG_IGN` survives exec.
+///
+/// Both halves live here rather than in `os::exec` so the child path
+/// that follows is the same code on both targets, and the ordering
+/// matches Go's: signals are clean before the child's `dup2`/`chdir`.
+///
+/// Every call in the child is async-signal-safe (`sigaction`,
+/// `pthread_sigmask`), nothing allocates, and `FORK_LOCK` is released
+/// by one atomic RMW plus `releasem`'s TLS-relative decrement.
+#[allow(non_snake_case)]
+pub fn Fork() -> i32 {
+    unsafe {
+        let all: u32 = !0;
+        let mut old: u32 = 0;
+        fork_lock_lock();
+        sys::sys_pthread_sigmask(SIG_SETMASK_DARWIN, &all, &mut old);
+        let pid = sys::sys_fork() as i32;
+        if pid == 0 {
+            let mut sig = 1;
+            while sig < NSIG_DARWIN {
+                let mut cur = sys::BsdSigaction::default();
+                if sys::sys_sigaction(sig, core::ptr::null(), &mut cur) == 0
+                    && cur.handler != SIG_DFL_DARWIN
+                    && cur.handler != SIG_IGN_DARWIN
+                {
+                    // SIG_DFL, empty mask, no flags.
+                    let dfl = sys::BsdSigaction::default();
+                    sys::sys_sigaction(sig, &dfl, core::ptr::null_mut());
+                }
+                sig += 1;
+            }
+        }
+        sys::sys_pthread_sigmask(SIG_SETMASK_DARWIN, &old, core::ptr::null_mut());
+        fork_lock_unlock();
+        pid
+    }
+}
+
+/// `execve(2)` — returns only on failure, with `-errno`.
+/// Go: `exec_libc2.go:282-286`.
+#[allow(non_snake_case)]
+pub fn Execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32 {
+    unsafe { sys::sys_execve(path, argv, envp) as i32 }
+}
+
+/// `wait4(2)` — the reaped pid, or `-errno`.
+///
+/// Darwin's status word has Linux's layout for the exited, signalled
+/// and stopped cases — low 7 bits the signal, `0x7f` stopped, `0x80`
+/// core, exit code in bits 8-15 (Go: `syscall/syscall_bsd.go`,
+/// `WaitStatus`). Its `struct rusage` is the same 144 bytes, except
+/// that each `timeval` has a 32-bit `tv_usec` plus padding (Go:
+/// `syscall/ztypes_darwin_arm64.go:26-30`), which
+/// `os::exec_posix::timeval_to_duration` accounts for.
+///
+/// No EINTR loop: every handler goish installs that can interrupt a
+/// blocked thread carries `SA_RESTART`.
+#[allow(non_snake_case)]
+pub fn Wait4(pid: i32, status: *mut i32, options: i32, rusage: *mut u8) -> i32 {
+    unsafe { sys::sys_wait4(pid, status, options, rusage) as i32 }
+}
+
+/// `pipe2(2)`, which Darwin does not have: `pipe(2)`, then the flags
+/// one `fcntl` at a time — Go's `forkExecPipe`
+/// (`syscall/forkpipe.go:11-22`) for `O_CLOEXEC`, plus `F_SETFL` for
+/// `O_NONBLOCK`. The flag values are Darwin's (`O_CLOEXEC` is
+/// `0x1000000` here), so a caller passing `syscall::O_CLOEXEC` by name
+/// gets the right bit on both targets.
+///
+/// Held under `FORK_LOCK` shared, so no fork observes the pipe between
+/// its creation and its close-on-exec bit. On failure both ends are
+/// closed, `-errno` is returned and `pipefd` is left untouched.
+#[allow(non_snake_case)]
+pub fn Pipe2(pipefd: &mut [i32; 2], flags: i32) -> i32 {
+    let mut p = [-1i32; 2];
+    fork_lock_rlock();
+    let r = unsafe { pipe2_locked(&mut p, flags) };
+    fork_lock_runlock();
+    if r == 0 {
+        *pipefd = p;
+    }
+    r
+}
+
+unsafe fn pipe2_locked(p: &mut [i32; 2], flags: i32) -> i32 {
+    let r = sys::sys_pipe(p.as_mut_ptr());
+    if r < 0 {
+        return r as i32;
+    }
+    for &fd in p.iter() {
+        let mut r: isize = 0;
+        if flags & O_CLOEXEC != 0 {
+            r = sys::sys_fcntl(fd, F_SETFD, FD_CLOEXEC as isize);
+        }
+        if r >= 0 && flags & O_NONBLOCK != 0 {
+            r = sys::sys_fcntl(fd, F_GETFL, 0);
+            if r >= 0 {
+                r = sys::sys_fcntl(fd, F_SETFL, r | O_NONBLOCK as isize);
+            }
+        }
+        if r < 0 {
+            sys::sys_close(p[0]);
+            sys::sys_close(p[1]);
+            return r as i32;
+        }
+    }
+    0
+}
+
+/// `dup3(2)`, which Darwin does not have: `dup2(2)`, plus `FD_CLOEXEC`
+/// when `flags` asks for it. The fd `dup2` creates is not
+/// close-on-exec, "which is exactly what we want" for the child's stdio
+/// (Go: `exec_libc2.go:245-247`), so `flags == 0` is a plain `dup2` —
+/// the only form the child path uses, and async-signal-safe.
+///
+/// One difference kept visible rather than papered over: Linux's
+/// `dup3(fd, fd, …)` is `EINVAL`, while `dup2(fd, fd)` succeeds and
+/// leaves the flags alone (`exec_libc2.go:236-243`). No caller passes
+/// equal fds.
+#[allow(non_snake_case)]
+pub fn Dup3(oldfd: i32, newfd: i32, flags: i32) -> i32 {
+    if flags & O_CLOEXEC == 0 {
+        return unsafe { sys::sys_dup2(oldfd, newfd) as i32 };
+    }
+    fork_lock_rlock();
+    let r = unsafe {
+        let r = sys::sys_dup2(oldfd, newfd);
+        if r >= 0 {
+            let s = sys::sys_fcntl(newfd, F_SETFD, FD_CLOEXEC as isize);
+            if s < 0 {
+                sys::sys_close(newfd);
+                s
+            } else {
+                r
+            }
+        } else {
+            r
+        }
+    } as i32;
+    fork_lock_runlock();
+    r
+}
+
+/// Leave a forked child that could not exec: `_exit(2)`, not the
+/// `exit(3)` behind `Exit`. See `sys::sys_exit_child` for why this
+/// departs from Go's `libc_exit` (`exec_libc2.go:291-293`).
+#[allow(non_snake_case)]
+pub fn ForkExit(code: i32) -> ! {
+    unsafe { sys::sys_exit_child(code) }
 }
