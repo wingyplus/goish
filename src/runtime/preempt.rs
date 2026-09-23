@@ -3,7 +3,8 @@
 // Phase C — full injection. The SIGURG handler installs a kernel-
 // level pushCall on the user G's `ucontext`, redirecting it through
 // `goish_async_preempt` (asm trampoline). The trampoline saves all
-// caller-saved GPRs/XMMs/flags, calls `goish_async_preempt2` (Rust),
+// GPRs, enabled SIMD registers, FP controls, and flags, then calls
+// `goish_async_preempt2` (Rust),
 // which yields the G via the cooperative scheduler. When the G is
 // later resumed, control returns into the trampoline epilogue, which
 // restores everything and `jmp`s back to the user's original PC —
@@ -23,15 +24,12 @@
 //        b. PC ∉ trampoline range
 //        c. M.curg = Some(g)
 //        d. g.status = Running
-//        e. SP ∈ [g.stack.lo + ASYNC_PREEMPT_STACK, g.stack.top)
-//   4. If all pass: stash user PC into `MStorage.preempt_resume_pc`,
-//      set `ucontext.RIP = goish_async_preempt`, set `ucontext.RSP =
-//      RSP - 8`. (Equivalent to Go's `pushCall` (signal_amd64.go:80)
-//      but without writing the resume PC to user memory — we keep it
-//      in per-M scratch so the user's red zone is fully preserved.)
+//        e. SP has the CPU-dependent `async_preempt_stack()` headroom.
+//   4. If all pass: write user PC to `[SP_user-144]`, below the red
+//      zone, and set ucontext.RIP to the trampoline and RSP to SP-8.
+//      The handler runs on the per-M alternate signal stack.
 //   5. Sigreturn → trampoline → `goish_async_preempt2` (yields) → on
-//      resume, trampoline epilogue restores user state and `jmp`s
-//      back to `MStorage.preempt_resume_pc`.
+//      resume, restore the G's own saved state and jump to its saved PC.
 //
 // ─── Why a separate handler from `os::signal::goish_sigtramp`? ─
 //
@@ -43,7 +41,7 @@
 // avoids overloading the established os::signal handler shape.
 
 use core::arch::naked_asm;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use crate::runtime::sched::{current_g, current_m, current_m_locks, GStatus, Gosched};
 use crate::syscall;
@@ -113,12 +111,71 @@ pub const REG_RSP: usize = 15;
 pub const REG_RIP: usize = 16;
 pub const REG_EFL: usize = 17;
 
-/// Stack budget the trampoline needs below the kernel-saved RSP:
-///   128 (red-zone skip) + 8 (saved BP) + 8 (saved FLAGS)
-///   + 384 (GPR+XMM save area + alignment slack)
-///   + 8 (call return) + ~256 (Rust frame margin)
-/// Round up generously; a 64 KiB G stack has plenty of headroom.
-pub const ASYNC_PREEMPT_STACK: usize = 1024;
+// go: none — Goish can interrupt arbitrary Rust AVX code, without Go's
+// compiler safe-point metadata. Preserve the vector state the OS enables.
+// x87, SSE, AVX, AVX-512 opmasks/ZMM: AMX and unrelated state such as PKRU
+// require a separate runtime contract and are intentionally not claimed here.
+const SIMD_XFEATURES: u64 = 0xe7;
+static FP_STATE_MASK: AtomicU64 = AtomicU64::new(0); // zero selects FXSAVE
+static FP_STATE_SIZE: AtomicUsize = AtomicUsize::new(512);
+static FP_STATE_READY: AtomicU8 = AtomicU8::new(0);
+
+/// Minimum headroom for the FXSAVE fallback. Includes the red zone/resume
+/// slots (160), GPR area (128), alignment slack (63), return PC (8), and
+/// 4 KiB for the Rust scheduler call chain. XSAVE adds its detected size.
+/// Use `async_preempt_stack()` for the actual budget on this host.
+pub const ASYNC_PREEMPT_STACK: usize = 160 + 128 + 63 + 8 + 4096 + 512;
+
+// go: none — standard-format XSAVE size for the vector state we preserve.
+fn fp_state_layout() -> (u64, usize) {
+    use core::arch::x86_64::{__cpuid, __cpuid_count, _xgetbv};
+    let features = __cpuid(1).ecx;
+    if __cpuid(0).eax < 0x0d || features & (3 << 26) != (3 << 26) {
+        return (0, 512);
+    }
+    let supported = __cpuid_count(0x0d, 0);
+    let supported = u64::from(supported.eax) | (u64::from(supported.edx) << 32);
+    // SAFETY: XSAVE and OSXSAVE were checked above. Only read OS policy;
+    // never change XCR0. The selected mask stays immutable after install.
+    let mask = unsafe { _xgetbv(0) } & supported & SIMD_XFEATURES;
+    if mask & 3 != 3 {
+        return (0, 512);
+    }
+    let mut size = 576; // legacy area plus the 64-byte XSAVE header
+    for component in [2, 5, 6, 7] {
+        if mask & (1 << component) != 0 {
+            let leaf = __cpuid_count(0x0d, component);
+            let end = usize::try_from(leaf.ebx).unwrap() + usize::try_from(leaf.eax).unwrap();
+            size = size.max(end);
+        }
+    }
+    return (mask, size);
+}
+
+// go: none — publish once before installing the signal handler. Reinstalling
+// the handler must not change the layout beneath a suspended trampoline.
+fn initialize_fp_state() {
+    if FP_STATE_READY
+        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        let (mask, size) = fp_state_layout();
+        FP_STATE_SIZE.store(size, Ordering::Relaxed);
+        FP_STATE_MASK.store(mask, Ordering::Relaxed);
+        FP_STATE_READY.store(2, Ordering::Release);
+    } else {
+        while FP_STATE_READY.load(Ordering::Acquire) != 2 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+// go: none — CPU-dependent headroom, also exposed for boundary diagnostics.
+/// Stack space required before injecting an asynchronous preemption.
+#[inline]
+pub fn async_preempt_stack() -> usize {
+    return ASYNC_PREEMPT_STACK + FP_STATE_SIZE.load(Ordering::Relaxed) - 512;
+}
 
 // `goish_async_preempt_end` — a symbol the trampoline's naked_asm
 // block emits immediately after the final `jmp`. Used to compute
@@ -256,21 +313,9 @@ fn is_in_mcall_asm(pc: u64) -> bool {
 
 // ─── async_preempt2: the Rust half ─────────────────────────────────
 //
-// Called by the trampoline after the full register set is on-stack.
-// Runs on the user G's stack (we're between the kernel-injected
-// pushCall and the user's pre-SIGURG PC). `acquirem` makes the M
-// non-preemptible while we manipulate scheduler state and hold
-// SpinLocks; `releasem` is paired *before* `swap_context` so the
-// counter is balanced on the same M (mirrors Go's gopark in
-// proc.go:419).
-//
-// The yield mechanism is `gopark(preempt_park_commit, …)` rather
-// than `Gosched`: gopark + commit-fn lets the M release locks (none
-// here) post-swap on g0, and the G stays in `Waiting` until
-// `preempt_park_commit` immediately re-makes it Runnable via
-// `goready`. This matches Go's `gopreempt_m` (proc.go:4330) →
-// `goschedImpl(gp, true)` step shape — a yield that the *scheduler*
-// (not the parker) marks runnable so other Ms can dispatch it.
+// Called after the interrupted G's registers are saved on its own stack.
+// Gosched switches to the scheduler stack and makes this G runnable. Its
+// suspended trampoline and FP image travel with it if it resumes on another M.
 
 #[no_mangle]
 #[inline(never)]
@@ -312,34 +357,18 @@ extern "C" fn goish_async_preempt2() {
 //     [SP_user-8]    user's original byte      ← %rsp at entry
 //     [SP_user-128]  ↘ user red-zone untouched (no writes here)
 //     [SP_user-136]  user_rax snapshot         ← rsp after sub $128
-//     [SP_user-144]  resume_pc snapshot        ← rsp after push fs:[…]
+//     [SP_user-144]  resume_pc snapshot        ← written by SIGURG handler
 //     [SP_user-152]  saved BP                  ← rsp after pushq rbp
 //     [SP_user-160]  saved FLAGS               ← rsp after pushfq
-//     ...            384 bytes save area + ≤16 align slack
-//     [save_top..save_top+368]  GPR (0..104) + XMM (112..352)
+//     ...            128-byte GPR save area, then CPU-sized FP area
+//     [save_top..]    XSAVE (64-aligned), or 512-byte FXSAVE fallback
 //     [save_top - 8] return PC for async_preempt2 call
 //
-// **Per-call snapshots on the G stack (load-bearing for cross-park
-// safety).** The handler writes `MStorage.preempt_resume_pc` before
-// every injection, but that slot is per-M and gets overwritten by
-// each subsequent preempt that lands on the same worker thread.
-// Without snapshotting, this sequence corrupts the resume PC:
-//
-//     1. G₁ preempted. Handler stores G₁'s PC in fs:[resume_pc].
-//     2. G₁ yields in `async_preempt2 → gopark`. M dispatches G₂.
-//     3. G₂ preempted. Handler **overwrites** fs:[resume_pc] with G₂'s PC.
-//     4. G₂'s trampoline jmps to G₂'s PC (correct — last write wins).
-//     5. M re-dispatches G₁. async_preempt2 returns to trampoline.
-//     6. Trampoline jmps to fs:[resume_pc] = G₂'s PC, **not G₁'s**.
-//
-// The fix is to snapshot `fs:[resume_pc]` at trampoline ENTRY (the
-// `push qword fs:[…]` below) onto G₁'s stack. Subsequent preempts'
-// per-M writes don't disturb the per-call snapshot. The matching
-// `jmp qword ptr [rsp - 144]` at the epilogue reads from the snapshot
-// location relative to the post-teardown RSP, which is `SP_user`.
-//
-// Same scheme for `preempt_rax_save`: snapshotted to the G-stack
-// scratch slot at `[SP_user-136]` before the save-area teardown.
+// The resume PC and all register state belong to the G's stack frame.
+// Per-M scratch is insufficient: while this G yields, the same M may
+// preempt another G, and this G may resume on a different M.
+// The epilogue uses RBP to find the fixed GPR area above the CPU-sized
+// FP area, then restores the original stack pointer and resume PC.
 //
 // Calling convention: `extern "C"` so `call` semantics match SysV.
 // Naked: no Rust prologue/epilogue.
@@ -395,13 +424,9 @@ pub unsafe extern "C" fn goish_async_preempt() {
         // above is `lea`/`push`/`mov` (all flag-preserving).
         "pushfq",                                    // [SP_user-160] = user FLAGS
 
-        // Step 5: 768-byte save area + 16-byte alignment.
-        //   [rsp + 0..104]    14 GPRs
-        //   [rsp + 112..623]  512-byte fxsave area (16-aligned)
-        //                     — saves x87/MMX/MXCSR/XMM0-15 in one go.
-        // 768 = 624 (used) + 144 align/call-margin slack.
-        "sub rsp, 768",
-        "and rsp, -16",
+        // Step 5: fixed GPR area at rbp-136. Save every GPR before
+        // using scratch registers to allocate the variable FP area.
+        "sub rsp, 128",
 
         // Step 6: save 14 GPRs (rax,rcx,rdx,rbx,rsi,rdi,r8-r15) at
         // offsets 0..104 (RBP and RSP are not in the save area —
@@ -421,31 +446,62 @@ pub unsafe extern "C" fn goish_async_preempt() {
         "mov [rsp + 96],  r14",
         "mov [rsp + 104], r15",
 
-        // Step 7: fxsave64 at [rsp+112] (16-aligned). Saves x87
-        // FPU + MMX + MXCSR + XMM0-15 in 512 bytes — superset of
-        // the prior movups loop. Avoids the multi-instruction
-        // window where individual XMMs could see asynchronous
-        // updates from a nested signal handler.
-        "fxsave64 [rsp + 112]",
+        // Step 7: variable-size FP area, owned by this suspended G's
+        // frame (never per-M scratch). Both paths use 64-byte alignment,
+        // which also satisfies the SysV call alignment below.
+        "sub rsp, qword ptr [rip + {state_size}]",
+        "and rsp, -64",
+        "mov rax, qword ptr [rip + {state_mask}]",
+        "test rax, rax",
+        "jz 2f",
+        // XSAVE does not initialize all header/reserved bits. This is a
+        // fresh stack image, so clear its header with INTEGER stores:
+        // vector instructions here could destroy the state being saved.
+        "mov qword ptr [rsp + 512], 0",
+        "mov qword ptr [rsp + 520], 0",
+        "mov qword ptr [rsp + 528], 0",
+        "mov qword ptr [rsp + 536], 0",
+        "mov qword ptr [rsp + 544], 0",
+        "mov qword ptr [rsp + 552], 0",
+        "mov qword ptr [rsp + 560], 0",
+        "mov qword ptr [rsp + 568], 0",
+        "mov rdx, rax",
+        "shr rdx, 32",
+        "xsave64 [rsp]",
+        // Avoid AVX -> legacy SSE transition costs in scheduler code.
+        // Only do this after saving, and only if OS-enabled AVX is present.
+        "test eax, 4",
+        "jz 3f",
+        "vzeroupper",
+        "jmp 3f",
+        "2:",
+        "fxsave64 [rsp]",
+        "3:",
 
         // ── Body ──
-        // async_preempt2 manages m.locks (acquirem at entry,
-        // releasem before gopark's swap_context). The trampoline's
-        // own PC range is filtered by `is_in_trampoline(PC)` in the
+        // Gosched manages m.locks around the scheduler transition.
+        // The trampoline's PC range is filtered by `is_in_trampoline(PC)` in the
         // handler, covering the prologue/epilogue windows where
         // m.locks could be 0.
         "call {async_preempt2}",
 
         // ── Epilogue ──
-        // Snapshot user_rax (currently in save area at [rsp+0]) to
-        // a frame-local scratch slot at [rbp+16] = [SP_user-136].
-        // This slot is below the red zone and above the saved BP,
-        // so it survives the save-area teardown without race.
+        // Restore FP/vector state before tearing down this G's frame.
+        // The masks/layout are immutable even if the G migrated to another M.
+        "mov rax, qword ptr [rip + {state_mask}]",
+        "test rax, rax",
+        "jz 4f",
+        "mov rdx, rax",
+        "shr rdx, 32",
+        "xrstor64 [rsp]",
+        "jmp 5f",
+        "4:",
+        "fxrstor64 [rsp]",
+        "5:",
+        // No vector instructions or Rust calls after restoring state.
+        "lea rsp, [rbp - 136]",
         "mov rax, [rsp + 0]",
         "mov [rbp + 16], rax",
-
-        // fxrstor64 — restore x87/MMX/MXCSR/XMM0-15 in one shot.
-        "fxrstor64 [rsp + 112]",
 
         // Restore the other GPRs (rax stays as scratch — restored
         // below from the [rbp+16] snapshot, BEFORE popfq).
@@ -515,22 +571,23 @@ pub unsafe extern "C" fn goish_async_preempt() {
         "int3",
 
         async_preempt2 = sym goish_async_preempt2,
+        state_size = sym FP_STATE_SIZE,
+        state_mask = sym FP_STATE_MASK,
     )
 }
 
 // ─── Handler ───────────────────────────────────────────────────────
 //
 // SA_SIGINFO calling convention: `(int sig, siginfo_t *info, void *ctx)`.
-// `ctx` is `ucontext_t *`. Runs on the kernel-supplied signal stack
-// (default: user's current SP minus the 128-byte red zone minus the
-// signal frame). For goroutines on 64 KiB stacks this is fine.
+// `ctx` is `ucontext_t *`. Runs on the per-M alternate signal stack,
+// leaving the interrupted G's red zone and register-save frame untouched.
 //
 // **Allowed operations** (all async-signal-safe):
 //   - lock-free atomic loads/stores (counters, m.locks)
 //   - reading the M's struct via `data_unchecked()` (Theorem 1
 //     applies: at L=0 no concurrent write is in flight)
 //   - reading G.status, G.stack metadata
-//   - writing to per-M scratch slots in MStorage (preempt_resume_pc)
+//   - writing the resume PC below the interrupted G's red zone
 //   - writing to ucontext.gregs (kernel-allocated, single-thread)
 //
 // **Forbidden** (would deadlock or violate AS-safety):
@@ -606,11 +663,11 @@ extern "C" fn goish_preempt_sigtramp(_sig: i32, _info: *const u8, ctx: *mut Ucon
         return;
     }
 
-    // 6. SP ∈ [stack.lo + ASYNC_PREEMPT_STACK, stack.top)
+    // 6. Reserve the detected FP image, alignment, and scheduler call headroom.
     let sp = unsafe { (*ctx).uc_mcontext.gregs[REG_RSP] } as usize;
     let stack_lo = g_ref.stack.base();
     let stack_hi = g_ref.stack.top();
-    if sp < stack_lo + ASYNC_PREEMPT_STACK || sp >= stack_hi {
+    if sp < stack_lo || sp - stack_lo < async_preempt_stack() || sp >= stack_hi {
         SKIP_SP_RANGE.fetch_add(1, Ordering::Relaxed);
         return;
     }
@@ -671,6 +728,7 @@ extern "C" fn goish_preempt_sigtramp(_sig: i32, _info: *const u8, ctx: *mut Ucon
 /// `SigreturnTrampoline` complete the kernel's mandated sigreturn
 /// path.
 pub fn install() {
+    initialize_fp_state();
     // `SA_ONSTACK`: every M has registered a per-thread alt signal
     // stack via `sigaltstack(2)` at startup
     // (`runtime::sched::m::install_signal_stack`). With this flag,
