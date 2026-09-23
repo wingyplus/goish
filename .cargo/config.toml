@@ -91,7 +91,10 @@ rustflags = [
 # x86_64-unknown-linux-gnu so the bare-metal rustflags above cannot leak
 # into `goish-macros`. Since the host tuple IS aarch64-apple-darwin,
 # this block does leak into proc-macro builds; `force-frame-pointers` is
-# harmless to a proc macro. Darwin builds pass `--target` explicitly.
+# harmless to a proc macro. Darwin builds pass `--target` explicitly —
+# or, for plain `cargo build`/`cargo run`, the repo's `.envrc` sets
+# CARGO_BUILD_TARGET=aarch64-apple-darwin on Apple Silicon hosts only
+# (`direnv allow` once).
 [target.aarch64-apple-darwin]
 rustflags = [
     "-C", "force-frame-pointers=yes",

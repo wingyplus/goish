@@ -116,8 +116,21 @@ help:
 	@echo "  make e2e FILTER='^chan_'"
 	@echo "  make e2e LOOPS=10 TIMEOUT=30 FILTER='^http_'"
 
+# The target is pinned explicitly — `--target` for `build`,
+# CARGO_BUILD_TARGET for `e2e-build`, whose script puts its own
+# arguments after `build` — rather than left to the `.cargo/config.toml`
+# pin: the repo's `.envrc` sets CARGO_BUILD_TARGET on Apple Silicon (so
+# plain `cargo run` works there), and that would otherwise turn these
+# into a Darwin build of every example.
 build:
-	$(CROSS_ENV) $(HOST_LINKER) $(if $(CROSS_ENV),$(CARGO_CROSS),$(CARGO)) build --examples
+	$(CROSS_ENV) $(HOST_LINKER) $(if $(CROSS_ENV),$(CARGO_CROSS),$(CARGO)) build --target $(TARGET) --examples
+
+# FILTER already chooses which examples the runner executes. Apply the same
+# selection before compilation so focused package checks do not build hundreds
+# of unrelated static binaries. With no FILTER, the full build is unchanged.
+e2e-build:
+	@bash scripts/e2e_build_test.sh
+	@FILTER='$(FILTER)' CARGO_BUILD_TARGET=$(TARGET) $(CROSS_ENV) $(HOST_LINKER) bash scripts/e2e_build.sh $(if $(CROSS_ENV),$(CARGO_CROSS),$(CARGO))
 
 # ─── aarch64-unknown-linux-gnu ────────────────────────────────────────
 #
