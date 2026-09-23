@@ -363,7 +363,7 @@ produce no error at all, and so are the easiest to trip over:
 
 `current_m()` works on the main thread. `make run-darwin` runs **63 examples natively, 63 pass**
 (the 17 from M1 plus a 46-example cross-section). Over the 487 `_smoke` examples that do not use
-`goish::import!`, **272 now pass**.
+`goish::import!` and were not already on the allowlist, **272 now pass**.
 
 **What landed.** `sched/tls/tls_darwin_arm64.rs` is Go's scheme, not a `pthread_getspecific`
 wrapper: `tlsinit` (`runtime/sys_darwin_arm64.go`) allocates a key, writes a magic value through
@@ -379,10 +379,14 @@ are real.
 **Four findings.**
 
 1. **The plan's M4 row said "ship `pthread_getspecific` first", and that was the wrong order.**
-   Not for speed: `acquirem`/`releasem` are in `goish_rt_text`, and a `pthread_getspecific` would
-   put a call into libSystem's `.text` — outside the PC range M8's SIGURG handler treats as
-   runtime code — inside the very window those two exist to protect. The library call is used
-   exactly once, in `init`, to cross-check the direct read against it. An unset offset aborts
+   Not for speed: the direct read is the only form `acquirem`/`releasem` can eventually take as
+   one `asm!` block inside `goish_rt_text` (`mrs; and; ldr; ldr; ldadd`) — which is what M8's
+   SIGURG PC filter needs to protect their window — and a `pthread_getspecific` call could never
+   sit inside that block. **The block does not exist yet**: measured with `objdump` on a debug
+   `defer_smoke`, `acquirem` reaches `locks_inc` by `bl` into ordinary `__text`, on linux/arm64
+   too. amd64 is immune (one `fs`-relative instruction is correct anywhere); arm64 is not, and
+   M8 must close it — see its row. The library call is used exactly once, in `init`, to
+   cross-check the direct read against it. An unset offset aborts
    loudly rather than reading TSD slot 0, which holds the thread's `pthread_t` and would
    dereference to plausible garbage instead of faulting.
 
@@ -419,7 +423,9 @@ must call `tls::set_base` before anything takes a `SpinLock`.
 CLI colima needs was not installed on the host, so neither ran. The shared-code changes are a
 pure extract-function in `setup_main_g0` and an `if cfg!(target_arch = "aarch64")` that
 compiles away on x86_64, but that is argument, not measurement; re-run `make run-arm64` and the
-amd64 smoke before relying on it. `goishlint` did not run either (closed source).
+amd64 smoke before relying on it. `goishlint` did not run either (closed source). `anchor_check.py src` (GOROOT on the local Go
+1.26.4) reports M1's census unchanged — 2259 ok, 803 RANGE_WRONG, 64 RANGE_FAT, 207 END_SHORT,
+31 NOT_FOUND, 20 MISSING_FILE, 1806 BARE — with no finding in any file M4a touched.
 
 ---
 
@@ -625,7 +631,7 @@ unchanged**.
 | **5 — Context switch (AAPCS64)** | goroutines run; `go!` works | Return address is in **x30, not on the stack**, so `swap_context`'s "`ret` pops PC off the target stack" design and `gogo`'s red-zone-avoiding `jmp` both need restructuring, not transliterating. **`d8`–`d15` are callee-saved** — SysV has no equivalent, so this is strictly more work than the amd64 version, and omitting them corrupts float state silently. **Never touch x18.** No red zone. | `runtime/asm_arm64.s` (`gogo`, `mcall`, `systemstack`), `runtime/stubs_arm64.go` |
 | **6 — Signals: SIGSEGV + backtrace** | crash → backtrace, guard-page detection | `uc_mcontext` is a pointer; BSD `sigaction` has **no `sa_restorer`**, so `SigreturnTrampoline` (which hardcodes `rt_sigreturn=15`) is Linux-only. **DWARF is not in the linked Mach-O image** — it lives in `.o` files and `.dSYM` bundles, so `runtime/symbolize/` (which mmaps `/proc/self/exe` and parses ELF) degrades to `dladdr()`: symbol name, no `file:line`. A permanent fidelity regression on Darwin; document rather than build a dSYM parser. | `runtime/signal_arm64.go`, `runtime/defs_darwin_arm64.go` |
 | **7 — Futex → pthread cond** | M parking/waking; `note.rs`; `sync` | Must land with or after M4 — it adds `pthread_mutex_t`/`pthread_cond_t` to `MStorage`, whose offset-0 `tls_self` invariant is load-bearing for asm. All 10 futex consumers. | `runtime/os_darwin.go:31-92` |
-| **8 — Async preemption** | SIGURG preemption; sysmon retakes | Rewrite `preempt.rs:349-521`: `stp`/`ldp` instead of `fxsave64`, NZCV/FPSR via `mrs`/`msr` instead of `pushfq`/`popfq`, no 128-byte red-zone skip, **x18 excluded**. `pthread_kill` replaces `Tgkill` (`sysmon.rs:408`). The `goish_rt_text` PC-range filter needs the Mach-O `getsectiondata` walk. Re-derive `ASYNC_PREEMPT_STACK`. | `runtime/preempt_arm64.s`, `runtime/os_darwin.go:489` |
+| **8 — Async preemption** | SIGURG preemption; sysmon retakes | Rewrite `preempt.rs:349-521`: `stp`/`ldp` instead of `fxsave64`, NZCV/FPSR via `mrs`/`msr` instead of `pushfq`/`popfq`, no 128-byte red-zone skip, **x18 excluded**. `pthread_kill` replaces `Tgkill` (`sysmon.rs:408`). The `goish_rt_text` PC-range filter needs the Mach-O `getsectiondata` walk. **On both arm64 targets `acquirem`/`releasem` must first become one inline-asm RMW** (`mrs; [and; ldr;] ldr; ldadd`) — today they `bl` out of `goish_rt_text` into `locks_inc` in debug builds, so the filter cannot see the window (M4a finding 1). Re-derive `ASYNC_PREEMPT_STACK`. | `runtime/preempt_arm64.s`, `runtime/os_darwin.go:489` |
 | **9 — kqueue netpoller** | `net`, TCP, HTTP examples | Wake is `EVFILT_USER` + `NOTE_TRIGGER`, **not** a self-pipe (Go uses the pipe variant only on other BSDs). No `accept4` → `accept` + `fcntl`. `EV_CLEAR` ≈ `EPOLLET` but `kevent` batches changes and events in one call. | `runtime/netpoll_kqueue.go`, `netpoll_kqueue_event.go` |
 | **10 — Package init** | `goish::import!` on Darwin | `getsectiondata` bounds; **not** `__mod_init_func` (dyld runs it pre-allocator) | `runtime/proc.go` (`doInit`) |
 | **11 — CPU features** | AES/PMULL/SHA/DIT detection | Perf-only — all crypto is scalar today, so nothing regresses. **Exception:** `crypto/subtle/dit.rs` is a hardcoded no-op standing in for Go's `DITSupported`, which is *true on arm64 with FEAT_DIT* — on this target that silently drops a timing guarantee Go provides. Also fix `xor_generic.rs:33 supportsUnaligned` and `tls/cipher_suites.rs:1164 hasAESGCMHardwareSupport`. | `internal/cpu/cpu_arm64_darwin.go` |

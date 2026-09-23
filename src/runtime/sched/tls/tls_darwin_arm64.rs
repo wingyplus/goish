@@ -34,11 +34,20 @@
 // The port plan's M4 row said to ship `pthread_getspecific` first and
 // take the `MRS` path later "once `tls_arm64.s` has been read". It has
 // been, and the direct read is taken now for a reason that is not speed:
-// `acquirem`/`releasem` live in `goish_rt_text`, and a
-// `pthread_getspecific` would put a call into libSystem's `.text` —
-// outside the range M8's SIGURG handler treats as runtime code — inside
-// the window those two exist to protect. The library call is used once,
-// in `init`, to prove the direct read agrees with it.
+// it is the only form `acquirem`/`releasem` can eventually take as a
+// single `asm!` block in `goish_rt_text` (`mrs; and; ldr; ldr; ldadd`),
+// which is what M8's SIGURG PC filter needs to cover the window. A
+// `pthread_getspecific` is a call into libSystem and could never sit
+// inside that block. The library call is used once, in `init`, to
+// prove the direct read agrees with it.
+//
+// **That block does not exist yet.** Today these are ordinary `#[inline]`
+// functions, and in a debug build `acquirem` reaches `locks_inc` — and
+// `locks_inc` reaches `AtomicU32::fetch_add` — by `bl` into regular
+// `__text` (measured with `objdump` on `defer_smoke`). linux/arm64 has
+// the same gap. amd64 does not need the block: its RMW is one
+// `fs`-relative instruction, correct wherever it is placed. Nothing
+// preempts asynchronously on arm64 until M8, so this is M8's to close.
 //
 // ─── The cost, the same as linux/arm64 ─────────────────────────────────
 //
