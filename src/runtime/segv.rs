@@ -511,6 +511,13 @@ fn chain_to_default(sig: i32) {
     unsafe {
         let _ = syscall::RtSigaction(sig, &sa as *const _, core::ptr::null_mut());
     }
+    // A signal sent with kill(2) has no faulting instruction to re-run,
+    // so returning alone would let the process carry on. Send it again,
+    // to the process: whichever thread takes it (this one only once the
+    // handler returns and unblocks it) now gets the default action,
+    // which ends the process — for a real fault just as the re-run
+    // would have.
+    let _ = syscall::Kill(syscall::Getpid(), sig);
 }
 
 /// Install the fault handler for SIGSEGV and SIGBUS. Idempotent.
