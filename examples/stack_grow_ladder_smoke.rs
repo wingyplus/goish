@@ -12,9 +12,10 @@
 //   3. balance: after both, `grow_live()` and `grow_bytes_live()` are
 //      back to 0 and `grow_hits()` rose by at least one per pivot.
 //
-// Every goroutine is spawned with an explicit small `stack(N)`. A bare
-// `go!()` gets a 1 MiB reservation (`Stack::new_reserved`), so these
-// workloads would never reach a red zone there — which is why the
+// Every goroutine under test is spawned with an explicit small
+// `stack(N)`. A bare `go!()` gets a 1 MiB reservation
+// (`Stack::new_reserved`), so these workloads would never reach a red
+// zone there — which is why the
 // undeclared grow_3tier / grow_macro / grow_park / grow_auto harnesses,
 // written for a bare-`go!()` auto-grow that does not exist, report
 // "did not grow" on every target.
@@ -122,8 +123,9 @@ fn main() {
     let hits1 = sched::grow_hits();
     let c = make!(chan i64, 4);
     {
+        // The producer is not under test: a bare go!, off the stackpool.
         let c = c.clone();
-        go!(stack(4 * KB), move || {
+        go!(move || {
             for i in 1..=NITER {
                 c.Send(i);
             }
