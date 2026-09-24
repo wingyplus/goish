@@ -28,7 +28,9 @@ use crate::runtime::preempt::{UcontextT, REG_RBP, REG_RIP, REG_RSP};
 use crate::runtime::sched::G;
 use crate::syscall;
 
-const PAGE: usize = 4096;
+/// Width of the "just below the stack" window a fault must land in to
+/// count as overflow — the guard, whose size is the kernel page.
+const PAGE: usize = crate::runtime::sched::GUARD_SIZE;
 
 // ─── Spawn-site side table ────────────────────────────────────────────
 //
@@ -509,8 +511,10 @@ fn chain_to_default() {
 pub fn install() {
     let sa = syscall::Sigaction {
         sa_handler: goish_segv_sigtramp as *const () as usize,
-        sa_flags: syscall::SA_SIGINFO | syscall::SA_RESTORER | syscall::SA_ONSTACK,
-        sa_restorer: syscall::SigreturnTrampoline as *const () as usize,
+        sa_flags: syscall::SA_SIGINFO
+            | syscall::SA_RESTORER
+            | syscall::SA_ONSTACK,
+        sa_restorer: syscall::sigreturn_restorer(),
         sa_mask: 0,
     };
     unsafe {

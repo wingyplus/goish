@@ -10,11 +10,11 @@
 //     branch Go takes on any kernel that does not export the vDSO
 //     symbol, so no behaviour is lost — only the fast path.
 //
-//   * `syscall.Syscall(getrandomTrap, …)` is `syscall::syscall3(…)`.
-//     goish's syscall package has no variadic `Syscall`; `syscall3` is
-//     the three-argument primitive it is built on, and it returns the
-//     kernel's raw `rc` rather than Go's `(r1, r2, errno)` triple —
-//     a negative `rc` is Go's `errno != 0`.
+//   * `syscall.Syscall(getrandomTrap, …)` is `syscall::Getrandom(…)`,
+//     the wrapper over the same trap on Linux (and over
+//     `arc4random_buf` on Darwin, which has no call number to trap
+//     through). It returns the raw `rc` rather than Go's
+//     `(r1, r2, errno)` triple — a negative `rc` is Go's `errno != 0`.
 
 #![allow(non_snake_case, non_upper_case_globals)]
 
@@ -24,7 +24,6 @@ use crate::sync::atomic;
 use crate::syscall;
 use crate::{byte, int, int32, uint32, uintptr};
 
-use super::sysnum_linux_amd64::getrandomTrap;
 
 // go: sdk 1.25.5 internal/syscall/unix/getrandom.go:15-17 vgetrandom
 /// Go: `//go:linkname vgetrandom runtime.vgetrandom`. Returns
@@ -66,14 +65,7 @@ pub fn GetRandom(p: &mut slice<byte>, flags: GetRandomFlag) -> (int, error) {
     //         uintptr(len(p)), uintptr(flags))
     let n = p.Len();
     let raw: &mut [byte] = p;
-    let rc = unsafe {
-        syscall::syscall3(
-            getrandomTrap as usize,
-            raw.as_mut_ptr() as usize,
-            n as usize,
-            flags as usize,
-        )
-    };
+    let rc = syscall::Getrandom(raw.as_mut_ptr(), n as usize, flags as u32);
     // Go: if errno != 0 { if errno == syscall.ENOSYS {
     //         getrandomUnsupported.Store(true) }; return 0, errno }
     if rc < 0 {

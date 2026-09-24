@@ -113,13 +113,17 @@ fn test_stdin_pipe() {
 
 // ── Test 3: Start + Wait split ──────────────────────────────────────────
 //
-// Spawn `/bin/true` via Start, then Wait; check exit 0.
-// Also spawn `/bin/false` and verify exit error.
+// Spawn `true` via Start, then Wait; check exit 0.
+// Also spawn `false` and verify exit error.
+//
+// By name, through the $PATH lookup, not as `/bin/true`: macOS has
+// them only in /usr/bin, and Go's Command("/bin/true") fails Start
+// there the same way goish's does.
 
 fn test_start_wait() {
     // true → exit 0
     {
-        let mut cmd = exec::Command("/bin/true", goish::make!([]string, 0));
+        let mut cmd = exec::Command("true", goish::make!([]string, 0));
         let err = cmd.Start();
         check(err == nil, b"test_start_wait: Start(true) failed\n");
         let err = cmd.Wait();
@@ -128,7 +132,7 @@ fn test_start_wait() {
 
     // false → exit 1, Wait returns non-nil error
     {
-        let mut cmd = exec::Command("/bin/false", goish::make!([]string, 0));
+        let mut cmd = exec::Command("false", goish::make!([]string, 0));
         let err = cmd.Start();
         check(err == nil, b"test_start_wait: Start(false) failed\n");
         let err = cmd.Wait();

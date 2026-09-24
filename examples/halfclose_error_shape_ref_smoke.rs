@@ -32,9 +32,21 @@ use goish::net::net as gnet;
 use goish::{fmt, go, string, time};
 
 /// Go's output, verbatim.
+#[cfg(not(target_os = "macos"))]
 const GO: [&str; 5] = [
     "cw-open    opErr=false op=\"\"      net=\"\"    isClosed=false msg=\"<nil>\"",
     "cw-again   opErr=false op=\"\"      net=\"\"    isClosed=false msg=\"<nil>\"",
+    "cr-open    opErr=false op=\"\"      net=\"\"    isClosed=false msg=\"<nil>\"",
+    "cw-closed  opErr=true  op=\"close\" net=\"tcp\" isClosed=true  msg=\"close tcp LOCAL->REMOTE: use of closed network connection\"",
+    "cr-closed  opErr=true  op=\"close\" net=\"tcp\" isClosed=true  msg=\"close tcp LOCAL->REMOTE: use of closed network connection\"",
+];
+// darwin/arm64: the same sequence run by Go on darwin/arm64. A second
+// shutdown(SHUT_WR) is an error in the BSD kernel (ENOTCONN) where Linux
+// treats it as a no-op, and Go reports it as the close OpError it is.
+#[cfg(target_os = "macos")]
+const GO: [&str; 5] = [
+    "cw-open    opErr=false op=\"\"      net=\"\"    isClosed=false msg=\"<nil>\"",
+    "cw-again   opErr=true  op=\"close\" net=\"tcp\" isClosed=false msg=\"close tcp LOCAL->REMOTE: shutdown: socket is not connected\"",
     "cr-open    opErr=false op=\"\"      net=\"\"    isClosed=false msg=\"<nil>\"",
     "cw-closed  opErr=true  op=\"close\" net=\"tcp\" isClosed=true  msg=\"close tcp LOCAL->REMOTE: use of closed network connection\"",
     "cr-closed  opErr=true  op=\"close\" net=\"tcp\" isClosed=true  msg=\"close tcp LOCAL->REMOTE: use of closed network connection\"",

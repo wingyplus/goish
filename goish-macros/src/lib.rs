@@ -41,21 +41,18 @@ pub fn main(_attr: TokenStream, item: TokenStream) -> TokenStream {
         _ => panic!("#[goish::main] must be placed on `fn main() {{ ... }}`"),
     };
 
-    // 1) ELF entry point — assembly stub. Reads argc/argv off the
-    //    kernel-supplied stack, aligns rsp to 16 bytes, calls __goish_rt0.
-    //    `ud2` is dead code (rt0 is `-> !`); just makes any accidental
-    //    return crash loudly.
+    // 1) ELF entry point. The stub itself lives in `goish::runtime::entry`
+    //    as a `macro_rules!`, and this emits only the call to it.
+    //
+    //    A proc macro is compiled for and runs on the HOST, so any
+    //    `cfg!(target_arch = …)` written here would read the host's
+    //    values rather than the target's — wrong in exactly the case
+    //    that matters, a cross build. Emitting an opaque
+    //    `::goish::__goish_entry!()` moves the decision to rustc at
+    //    target-compile time, and keeps `goish-macros` free of any
+    //    target dimension at all.
     let asm: TokenStream = r#"
-        ::core::arch::global_asm!(
-            ".global _start",
-            "_start:",
-            "    mov rdi, [rsp]",
-            "    lea rsi, [rsp + 8]",
-            "    xor rbp, rbp",
-            "    and rsp, -16",
-            "    call __goish_rt0",
-            "    ud2",
-        );
+        ::goish::__goish_entry!();
     "#
     .parse()
     .expect("goish::main: invalid asm preamble");
@@ -777,6 +774,10 @@ pub fn reflect(attr: TokenStream, item: TokenStream) -> TokenStream {
     // a codec is right here — asking every consumer to register its own
     // generated structs would be a footgun whose symptom is a runtime
     // error on one field of one message. Registration is idempotent.
+    //
+    // On Mach-O `.init_array` is not a valid section specifier; the
+    // registration goes in `__DATA,__goish_init` there instead, the
+    // section `goish::import!` uses and `__run_pkg_inits` walks.
     let reg_fn = format!("__goish_reg_any_marshal_{}", parsed.name);
     let reg_slot = format!("__GOISH_REG_ANY_MARSHAL_{}", parsed.name.to_uppercase());
     let _ = write!(
@@ -788,7 +789,8 @@ pub fn reflect(attr: TokenStream, item: TokenStream) -> TokenStream {
          #[used]\n\
          #[doc(hidden)]\n\
          #[allow(non_upper_case_globals)]\n\
-         #[link_section = \".init_array\"]\n\
+         #[cfg_attr(not(target_os = \"macos\"), link_section = \".init_array\")]\n\
+         #[cfg_attr(target_os = \"macos\", link_section = \"__DATA,__goish_init\")]\n\
          static {reg_slot}: extern \"C\" fn() = {reg_fn};\n",
         reg_fn = reg_fn,
         reg_slot = reg_slot,
@@ -1236,7 +1238,10 @@ pub fn import(input: TokenStream) -> TokenStream {
     // is conventionally formatted, not user-visible.
     let _ = writeln!(out, "#[used]");
     let _ = writeln!(out, "#[allow(non_upper_case_globals)]");
-    let _ = writeln!(out, "#[link_section = \".init_array\"]");
+    // Mach-O has no `.init_array` to borrow; the Darwin twin is a
+    // private section that `__run_pkg_inits` walks by ld64's bounds.
+    let _ = writeln!(out, "#[cfg_attr(not(target_os = \"macos\"), link_section = \".init_array\")]");
+    let _ = writeln!(out, "#[cfg_attr(target_os = \"macos\", link_section = \"__DATA,__goish_init\")]");
     let _ = writeln!(
         out,
         "static {}: extern \"C\" fn() = {};",

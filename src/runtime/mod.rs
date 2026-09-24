@@ -16,7 +16,9 @@
 use crate::syscall;
 
 pub mod args;
+pub mod cputicks;
 pub mod debug;
+pub mod entry;
 pub mod flags;
 pub mod heap;
 pub mod lockfree_ring;
@@ -29,7 +31,19 @@ pub mod note;
 pub mod pkginit;
 pub mod pprof;
 pub mod preempt;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod preempt_asm_amd64;
+#[cfg(target_arch = "aarch64")]
+mod preempt_asm_arm64;
 pub mod rand;
+pub(crate) mod sigctx;
+// The staged darwin/arm64 boot. A separate function under the same
+// `__goish_rt0` symbol rather than a third `#[cfg]` arm inside the one
+// below — see the file header.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod rt0_darwin;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use rt0_darwin::__goish_rt0;
 pub mod rt_section;
 pub mod sched;
 pub mod segv;
@@ -43,21 +57,37 @@ pub use heap::{alloc, free, mheap_alloc_pages, mheap_capacity_pages, mheap_free_
 
 // ─── GOOS / GOARCH / Compiler — Go runtime build identifiers ─────────
 //
-// Go: extern.go:397 / :401 — `const GOOS string = goos.GOOS`
+// Go: extern.go:391 / :395 — `const GOOS string = goos.GOOS`
 //                            `const GOARCH string = goarch.GOARCH`
 //
-// goish v1 is Linux-only, x86_64-only — these are baked at compile
-// time. Compiler is "goish" (matches the Go convention of returning
-// the build's compiler name; gc / gccgo / gollvm are the upstream
-// values).
+// Both are compile-time constants in Go too; `internal/goos` and
+// `internal/goarch` are generated per target by `go generate`, and
+// `#[cfg]` is the direct equivalent. They were literals here while
+// goish had one target, and a literal `"amd64"` on an arm64 build is
+// not a stale comment — `runtime.GOARCH` is what port code branches on.
+//
+// Compiler is "goish" (matching Go's convention of naming the build's
+// compiler; gc / gccgo / gollvm are the upstream values).
 
-/// `runtime.GOOS` (extern.go:397) — operating-system target. Always
-/// `"linux"` for goish v1.
+/// `runtime.GOOS` (extern.go:391) — operating-system target.
+#[cfg(target_os = "linux")]
 pub const GOOS: &str = "linux";
+/// `runtime.GOOS` (extern.go:391) — operating-system target.
+///
+/// `"darwin"`, not `"macos"`: Go names the OS, and `target_os` is
+/// Rust's spelling of the same thing. Port code that reads `GOOS` is
+/// reading a Go value and must see Go's string.
+#[cfg(target_os = "macos")]
+pub const GOOS: &str = "darwin";
 
-/// `runtime.GOARCH` (extern.go:401) — CPU architecture target.
-/// Always `"amd64"` for goish v1.
+/// `runtime.GOARCH` (extern.go:395) — CPU architecture target.
+#[cfg(target_arch = "x86_64")]
 pub const GOARCH: &str = "amd64";
+/// `runtime.GOARCH` (extern.go:395) — CPU architecture target.
+///
+/// `"arm64"`, not `"aarch64"` — again Go's spelling, not Rust's.
+#[cfg(target_arch = "aarch64")]
+pub const GOARCH: &str = "arm64";
 
 /// `runtime.Compiler` (extern.go:412) — name of the compiler used
 /// to build this binary. Goish reports `"goish"` to distinguish from
@@ -302,18 +332,19 @@ pub fn GoroutineProfile(_p: crate::goslice::slice<()>) -> (crate::types::int, bo
 // safe bound, so `Caller` returns `ok == false` and `Callers` returns
 // `0` — matching Go's "unable to recover information" contract.
 
-/// Read the caller's frame-base pointer (`rbp`). `#[inline(never)]` so
-/// the call site emits a real `call` and this helper sets up its own
-/// SysV frame (`push rbp; mov rbp, rsp`) — the returned value is *this
-/// helper's* `rbp`. The caller accounts for that extra frame in `skip`.
+/// Read the caller's frame-base pointer. `#[inline(never)]` so the call
+/// site emits a real call and this helper sets up its own frame — the
+/// returned value is *this helper's* frame pointer. The caller accounts
+/// for that extra frame in `skip`.
+///
+/// The register is per-target (`rbp` / `x29`), but the chain it heads is
+/// not: AAPCS64's frame record is `[x29]` = caller's x29, `[x29+8]` =
+/// return address, the same shape as SysV's `[rbp]`/`[rbp+8]`, so the
+/// walker below ports unchanged.
 #[inline(never)]
 fn caller_rbp() -> u64 {
-    let v: u64;
     // SAFETY: a plain register read; no memory touched, no stack use.
-    unsafe {
-        core::arch::asm!("mov {}, rbp", out(reg) v, options(nomem, nostack));
-    }
-    v
+    unsafe { crate::runtime::sched::tls::frame_pointer() }
 }
 
 /// Walk the current goroutine's `rbp` chain into `out`, returning the
@@ -652,6 +683,11 @@ pub fn FuncForPC(pc: crate::types::uintptr) -> Option<Func> {
 /// loads them into rdi/rsi per SysV, then `call`s here.
 ///
 /// `extern "C"` so the asm stub can call us with the C ABI.
+///
+/// Linux only. Darwin enters through `main` with a different signature
+/// (it is handed `envp`) and runs a much shorter sequence — see
+/// `runtime/rt0_darwin.rs`.
+#[cfg(target_os = "linux")]
 #[no_mangle]
 pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     // Stash argc/argv so os::Args() can decode them lazily on first use.
@@ -716,94 +752,30 @@ pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     // already dispatching by the time `__goish_main` runs. Each
     // worker thread has its own MStorage with a fresh fs base; the
     // main M shares the global SCHED runq with them.
+    // Worker Ms park in the scheduler, which needs a context switch to
+    // dispatch anything — M5 on arm64. Spawning them before that exists
+    // would put threads into `m_schedule_loop` with no way out.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     sched::bootstrap_workers(nprocs);
 
     // Spawn the sysmon thread (M18a). Owns the global timer heap;
     // wakes timer-parked goroutines via `time::Sleep`. Must come
     // after bootstrap_workers so register_m_storage's allocator is
     // up.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     sysmon::start_sysmon();
 
-    // Ignore SIGPIPE.
-    //
-    // Writing to a socket whose peer has closed raises SIGPIPE, whose
-    // DEFAULT ACTION IS TO TERMINATE THE PROCESS. Go's runtime
-    // ignores it (runtime/signal_unix.go, `_SigNotify|_SigIgn` for
-    // SIGPIPE) so the write returns EPIPE and the caller handles it.
-    //
-    // goish never did, which made this trivially fatal and remotely
-    // triggerable: any HTTP client that hangs up mid-response killed
-    // the whole server process. Caught 2026-08-14 by a reverse-proxy
-    // test exiting 141 on roughly one run in five, where the client
-    // closed a connection the proxy was still writing to.
-    //
-    // Go additionally re-raises SIGPIPE when the offending fd is 1 or
-    // 2, so `prog > /dev/full` still dies like a normal Unix program.
-    // That refinement needs the fd at signal time, which requires
-    // SA_SIGINFO plumbing; plain SIG_IGN is the safe subset and is
-    // what matters for sockets.
-    unsafe {
-        let sa = syscall::Sigaction {
-            sa_handler: 1, // SIG_IGN
-            sa_flags: syscall::SA_RESTORER | syscall::SA_RESTART,
-            sa_restorer: syscall::SigreturnTrampoline as *const () as usize,
-            sa_mask: 0,
-        };
-        let _ = syscall::RtSigaction(syscall::SIGPIPE, &sa, core::ptr::null_mut());
-    }
-
-    // Catch the signals Go catches and drops.
-    //
-    // Go's runtime installs a handler for every signal its sigtable
-    // marks `_SigNotify` (runtime/sigtab_linux_generic.go), whether or
-    // not the program ever imports os/signal. When one arrives and no
-    // channel is listening, `sigsend` fails, and — with no `_SigKill`
-    // or `_SigThrow` on that entry — the handler simply returns. The
-    // signal is dropped and the program lives.
-    //
-    // goish installed a handler only for signals passed to
-    // `signal.Notify`, so everything else took the KERNEL default.
-    // For these entries that default is to terminate, which made a
-    // goish program killable by a signal it never asked about —
-    // SIGWINCH included, and a terminal sends that on every resize.
-    // Measured 2026-09-04: a probe registered for SIGUSR1 died with
-    // rc=140 the moment the next case raised SIGUSR2.
-    //
-    // This is the same class as the SIGPIPE ignore above, and the same
-    // fix. The trampoline counts the delivery and sysmon forwards it
-    // to whichever channels registered; with none, it is dropped —
-    // which is exactly Go's behaviour.
-    //
-    // NOT installed here, each for a reason:
-    //   * SIGPIPE (13) — SIG_IGN above, which is stronger.
-    //   * SIGCHLD (17) — its default is ALREADY ignore, so nothing is
-    //     needed, and SIG_IGN would make the kernel auto-reap and
-    //     break exec.Cmd.Wait's wait4.
-    //   * SIGCONT/TSTP/TTIN/TTOU (18, 20-22) — Go marks these
-    //     `_SigDefault`: unhandled, it RESTORES the default and
-    //     re-raises, so Ctrl-Z still suspends. Catching them without
-    //     that logic would break job control.
-    //   * SIGURG (23) — goish's own preemption uses it; the handler
-    //     below owns it.
-    //   * SIGHUP/SIGINT/SIGTERM (1, 2, 15) — `_SigNotify+_SigKill`:
-    //     Go DIES on these when nothing is listening, so the kernel
-    //     default already matches.
-    //   * everything fatal (SIGILL, SIGSEGV, SIGBUS, SIGFPE, …) —
-    //     `_SigThrow`/`_SigPanic`, which goish reports its own way.
-    for sig in [
-        syscall::SIGUSR1,
-        syscall::SIGUSR2,
-        syscall::SIGALRM,
-        syscall::SIGXCPU,
-        syscall::SIGXFSZ,
-        syscall::SIGWINCH,
-    ] {
-        crate::runtime::signal::install_handler(sig);
-    }
+    // Ignore SIGPIPE and catch the signals Go catches and drops —
+    // see `signal::install_boot_handlers`.
+    crate::runtime::signal::install_boot_handlers();
 
     // Install the SIGURG preempt handler (M18b-α phase B).
     // Decision-only: counts would-be preempts but does not modify
     // ucontext yet. Phase C wires the asyncPreempt trampoline.
+    // The SIGURG handler injects a call to the asyncPreempt trampoline,
+    // which is M8 on arm64. Arming it before that exists would turn every
+    // preemption into the trampoline's own abort.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     preempt::install();
 
     // Initialise the in-process DWARF symboliser. Mmaps
@@ -862,6 +834,32 @@ pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     // of the fix and the half that generalises — a leaked goroutine
     // stops being able to hold the process at all. The sleeper leak
     // itself is still worth closing, and is tracked separately.
+    // ─── arm64: the staged boot ──────────────────────────────────────
+    //
+    // Everything above this point runs on arm64 today — the entry stub,
+    // args, flags, the thread pointer, dlmalloc, mheap, mcentral, the P
+    // array and the main g0. What does not is the *dispatch*: putting
+    // `main` on a goroutine requires `gogo`, and `gogo` is M5.
+    //
+    // So the main body is called directly on g0, exactly as goish itself
+    // did before M17b-ε, and with the same known limitation: `current_g()`
+    // is `None` while it runs, so any blocking primitive — channel
+    // send/recv, `WaitGroup::Wait`, contended `Mutex` — fatals with
+    // "outside of any goroutine" instead of parking. That is the M1
+    // contract on this target and the reason the arm64 allowlist starts
+    // at `hello` rather than at the channel examples.
+    //
+    // M5 deletes this branch.
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        unsafe { __goish_main() };
+        // Go: `exit(0)` at the foot of runtime.main.
+        crate::syscall::Exit(0);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    sched::mark_dispatching();
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     sched::newproc_with_stack_at(
         8 * 1024 * 1024,
         file!(),
@@ -881,7 +879,17 @@ pub extern "C" fn __goish_rt0(argc: i32, argv: *const *const u8) -> ! {
     // exit_group(2). (`m_schedule_loop`, not the public `schedule()`:
     // the public entry is `-> ()` because from inside a goroutine it
     // acts as a returning drain barrier.)
-    sched::m_schedule_loop()
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    sched::m_schedule_loop();
+
+    // Unreachable on amd64 (`m_schedule_loop` is `-> !`); on arm64 the
+    // block above exits the process. Present so the function still
+    // type-checks as `-> !` under both cfgs.
+    #[allow(unreachable_code)]
+    {
+        crate::syscall::Exit(0);
+        loop {}
+    }
 }
 
 // ─── panic handler ─────────────────────────────────────────────────────

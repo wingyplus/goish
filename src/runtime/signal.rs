@@ -84,11 +84,96 @@ pub fn install_handler(sig: i32) {
     let sa = syscall::Sigaction {
         sa_handler: goish_sigtramp as *const () as usize,
         sa_flags: syscall::SA_RESTORER | syscall::SA_RESTART,
-        sa_restorer: syscall::SigreturnTrampoline as *const () as usize,
+        sa_restorer: syscall::sigreturn_restorer(),
         sa_mask: 0,
     };
     unsafe {
         syscall::RtSigaction(sig, &sa as *const _, core::ptr::null_mut());
+    }
+}
+
+/// The signal dispositions every goish process starts with, on every
+/// target: SIGPIPE ignored, and a counting handler on each signal Go
+/// catches and drops. Called once from the boot, before user `main`.
+///
+/// On Darwin the numbers differ (SIGCHLD is 20, SIGURG 16, SIGCONT 19)
+/// but every signal below is spelled by name, so the list is the same.
+pub fn install_boot_handlers() {
+    // Ignore SIGPIPE.
+    //
+    // Writing to a socket whose peer has closed raises SIGPIPE, whose
+    // DEFAULT ACTION IS TO TERMINATE THE PROCESS. Go's runtime
+    // ignores it (runtime/signal_unix.go, `_SigNotify|_SigIgn` for
+    // SIGPIPE) so the write returns EPIPE and the caller handles it.
+    //
+    // goish never did, which made this trivially fatal and remotely
+    // triggerable: any HTTP client that hangs up mid-response killed
+    // the whole server process. Caught 2026-08-14 by a reverse-proxy
+    // test exiting 141 on roughly one run in five, where the client
+    // closed a connection the proxy was still writing to.
+    //
+    // Go additionally re-raises SIGPIPE when the offending fd is 1 or
+    // 2, so `prog > /dev/full` still dies like a normal Unix program.
+    // That refinement needs the fd at signal time, which requires
+    // SA_SIGINFO plumbing; plain SIG_IGN is the safe subset and is
+    // what matters for sockets.
+    unsafe {
+        let sa = syscall::Sigaction {
+            sa_handler: 1, // SIG_IGN
+            sa_flags: syscall::SA_RESTORER | syscall::SA_RESTART,
+            sa_restorer: syscall::sigreturn_restorer(),
+            sa_mask: 0,
+        };
+        let _ = syscall::RtSigaction(syscall::SIGPIPE, &sa, core::ptr::null_mut());
+    }
+
+    // Catch the signals Go catches and drops.
+    //
+    // Go's runtime installs a handler for every signal its sigtable
+    // marks `_SigNotify` (runtime/sigtab_linux_generic.go), whether or
+    // not the program ever imports os/signal. When one arrives and no
+    // channel is listening, `sigsend` fails, and — with no `_SigKill`
+    // or `_SigThrow` on that entry — the handler simply returns. The
+    // signal is dropped and the program lives.
+    //
+    // goish installed a handler only for signals passed to
+    // `signal.Notify`, so everything else took the KERNEL default.
+    // For these entries that default is to terminate, which made a
+    // goish program killable by a signal it never asked about —
+    // SIGWINCH included, and a terminal sends that on every resize.
+    // Measured 2026-09-04: a probe registered for SIGUSR1 died with
+    // rc=140 the moment the next case raised SIGUSR2.
+    //
+    // This is the same class as the SIGPIPE ignore above, and the same
+    // fix. The trampoline counts the delivery and sysmon forwards it
+    // to whichever channels registered; with none, it is dropped —
+    // which is exactly Go's behaviour.
+    //
+    // NOT installed here, each for a reason:
+    //   * SIGPIPE (13) — SIG_IGN above, which is stronger.
+    //   * SIGCHLD (17) — its default is ALREADY ignore, so nothing is
+    //     needed, and SIG_IGN would make the kernel auto-reap and
+    //     break exec.Cmd.Wait's wait4.
+    //   * SIGCONT/TSTP/TTIN/TTOU (18, 20-22) — Go marks these
+    //     `_SigDefault`: unhandled, it RESTORES the default and
+    //     re-raises, so Ctrl-Z still suspends. Catching them without
+    //     that logic would break job control.
+    //   * SIGURG (23) — goish's own preemption uses it; the handler
+    //     below owns it.
+    //   * SIGHUP/SIGINT/SIGTERM (1, 2, 15) — `_SigNotify+_SigKill`:
+    //     Go DIES on these when nothing is listening, so the kernel
+    //     default already matches.
+    //   * everything fatal (SIGILL, SIGSEGV, SIGBUS, SIGFPE, …) —
+    //     `_SigThrow`/`_SigPanic`, which goish reports its own way.
+    for sig in [
+        syscall::SIGUSR1,
+        syscall::SIGUSR2,
+        syscall::SIGALRM,
+        syscall::SIGXCPU,
+        syscall::SIGXFSZ,
+        syscall::SIGWINCH,
+    ] {
+        install_handler(sig);
     }
 }
 
@@ -129,12 +214,13 @@ pub fn register(c: &chan<i32>, sigs: &[i32]) {
         // registered the channel for nothing at all and installed no
         // handler — the exact opposite of what it asks for.
         //
-        // SIGKILL (9) and SIGSTOP (19) cannot be caught; asking for
-        // them is not an error, they simply never arrive, and
-        // rt_sigaction would fail on them anyway.
+        // SIGKILL and SIGSTOP cannot be caught; asking for them is not
+        // an error, they simply never arrive, and rt_sigaction would
+        // fail on them anyway. By name: SIGSTOP is 19 on Linux and 17
+        // on Darwin, where 19 is SIGCONT.
         let max_sig = MAX_SIG as i32; // goishlint:ignore GOISH005 - a signal-table bound, not a Go value
         for s in 1..max_sig {
-            if s == 9 || s == 19 {
+            if s == syscall::SIGKILL || s == syscall::SIGSTOP {
                 continue;
             }
             bitmap |= 1u64 << s;
@@ -172,13 +258,13 @@ pub fn register(c: &chan<i32>, sigs: &[i32]) {
 /// `is_ignored` and the note on `signal::Reset`.
 pub fn ignore_signal(sig: i32) {
     let idx = sig as u32; // goishlint:ignore GOISH005 - a table index bound, not a Go value
-    if idx >= 64 || sig == 9 || sig == 19 {
+    if idx >= 64 || sig == syscall::SIGKILL || sig == syscall::SIGSTOP {
         return;
     }
     let sa = syscall::Sigaction {
         sa_handler: 1, // SIG_IGN
         sa_flags: syscall::SA_RESTORER | syscall::SA_RESTART,
-        sa_restorer: syscall::SigreturnTrampoline as *const () as usize,
+        sa_restorer: syscall::sigreturn_restorer(),
         sa_mask: 0,
     };
     unsafe {

@@ -140,12 +140,7 @@ pub(crate) fn parse_listen_addr(s: &string) -> Result<syscall::SockaddrIn, strin
             | ((octets[2] as u32) << 8)
             | (octets[3] as u32)
     };
-    Ok(syscall::SockaddrIn {
-        sin_family: syscall::AF_INET as u16,
-        sin_port: syscall::htons(port),
-        sin_addr: syscall::htonl(addr),
-        _pad: [0; 8],
-    })
+    Ok(syscall::SockaddrIn::ipv4_host(addr, port))
 }
 
 /// Parse a `Dial` address. Accepts IPv4 literals and DNS hostnames.
@@ -184,12 +179,7 @@ pub(crate) fn parse_dial_addr(s: &string) -> Result<syscall::SockaddrIn, string>
             }
         }
     };
-    Ok(syscall::SockaddrIn {
-        sin_family: syscall::AF_INET as u16,
-        sin_port: syscall::htons(port),
-        sin_addr: syscall::htonl(addr),
-        _pad: [0; 8],
-    })
+    Ok(syscall::SockaddrIn::ipv4_host(addr, port))
 }
 
 /// Split `"host:port"` on the **last** `:` (so v4 with no v6 brackets

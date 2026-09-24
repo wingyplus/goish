@@ -54,6 +54,16 @@ mod p;
 mod scheduler;
 mod stack;
 pub mod stackpool;
+pub(crate) mod tls;
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod gobuf_asm_amd64;
+#[cfg(target_arch = "aarch64")]
+mod gobuf_asm_arm64;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod grow_asm_amd64;
+#[cfg(target_arch = "aarch64")]
+mod grow_asm_arm64;
 
 pub use g::{GStatus, G, SELECT_WAIT_MAX};
 pub use gobuf::{gogo, make_context, make_context_gogo, swap_context, Gobuf};
@@ -76,9 +86,10 @@ pub use p::{
 };
 pub use scheduler::{
     block_forever_commit, bootstrap_workers, chan_park_commit, current_g, for_each_m, gopark,
-    goready, live_g_count, lock_os_thread, m_schedule_loop, newproc, newproc_at,
+    goready, live_g_count, lock_os_thread, m_schedule_loop, mark_dispatching, newproc, newproc_at,
     newproc_with_stack, newproc_with_stack_at, num_cpus, panicking, register_m_storage,
-    registered_m_count, runq_len, schedule, selparkcommit, startup_procs, unlock_os_thread,
+    registered_m_count, runq_len, schedule, selparkcommit, start_os_thread, startup_procs,
+    unlock_os_thread,
     Gosched, DISPATCH_STAMP_COUNT, G_PANIC_COUNT,
 };
 pub use stack::{

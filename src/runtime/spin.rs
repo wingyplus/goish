@@ -103,7 +103,8 @@ fn drop_m_locks() {
 // inside `goish_rt_text`. Mirrors Go's runtime-prefix check at
 // preempt.go:420.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn cooperative_preempt_check() {
     if !crate::runtime::flags::COOP_PREEMPT.load(core::sync::atomic::Ordering::Relaxed) {
         return;
@@ -130,17 +131,10 @@ fn cooperative_preempt_check() {
     // the M's stale sched stack.
     //
     // Discriminator: cooperative yield is only safe when we are
-    // actually running on G's user stack. Read RSP and compare
+    // actually running on G's user stack. Read SP and compare
     // against `g.stack.base..g.stack.top`; if not in range, we're
     // still on M's scheduler stack — skip the yield.
-    let rsp: usize;
-    unsafe {
-        core::arch::asm!(
-            "mov {}, rsp",
-            out(reg) rsp,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
+    let rsp: usize = unsafe { crate::runtime::sched::tls::stack_pointer() };
     let stack_base = g_ref.stack.base();
     let stack_top = g_ref.stack.top();
     if rsp < stack_base || rsp >= stack_top {
@@ -200,7 +194,8 @@ impl<T> SpinLock<T> {
     /// `current_m_locks() != 0` check now skips even when the saved PC
     /// is inside the core CAS.
     #[inline(never)]
-    #[link_section = "goish_rt_text"]
+    #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn lock(&self) -> Guard<'_, T> {
         bump_m_locks();
@@ -248,7 +243,8 @@ impl<T> SpinLock<T> {
 /// live `SpinLock`. Once acquired, the caller must release via
 /// `raw_unlock(atom)` exactly once before the SpinLock is dropped.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 #[cfg_attr(debug_assertions, track_caller)]
 pub unsafe fn raw_lock(atom: *const AtomicBool) {
     // Bump m.locks BEFORE the CAS — same reasoning as `SpinLock::lock`:
@@ -268,7 +264,8 @@ pub unsafe fn raw_lock(atom: *const AtomicBool) {
 /// **Safety**: `atom` must be the same pointer used in the matching
 /// `raw_lock` call.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub unsafe fn raw_unlock(atom: *const AtomicBool) {
     // **Order reversed in M17b-ε debug fix**: release the atom FIRST,
     // then decrement `m.locks`. Same window-closure reasoning as
@@ -320,7 +317,8 @@ impl<'a, T> Drop for Guard<'a, T> {
     /// Generic — each monomorphization gets its own copy in the
     /// section.
     #[inline(never)]
-    #[link_section = "goish_rt_text"]
+    #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     fn drop(&mut self) {
         // Release atom FIRST, then decrement m.locks (M17b-ε debug
         // fix — see `raw_unlock` for the full rationale). Closes the

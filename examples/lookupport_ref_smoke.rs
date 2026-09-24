@@ -51,6 +51,7 @@ use goish::net::lookup;
 use goish::{fmt, string};
 
 /// Go's output, verbatim.
+#[cfg(not(target_os = "macos"))]
 const GO: [&str; 24] = [
     "\"tcp\"  \"80\"             port=80     err=\"<nil>\"",
     "\"tcp\"  \"0\"              port=0      err=\"<nil>\"",
@@ -66,6 +67,35 @@ const GO: [&str; 24] = [
     "\"tcp\"  \"submissions\"    port=465    err=\"<nil>\"",
     "\"udp\"  \"domain\"         port=53     err=\"<nil>\"",
     "\"udp\"  \"http\"           port=0      err=\"lookup udp/http: unknown port\"",
+    "\"\"     \"http\"           port=80     err=\"<nil>\"",
+    "\"ip\"   \"http\"           port=80     err=\"<nil>\"",
+    "\"tcp4\" \"http\"           port=80     err=\"<nil>\"",
+    "\"bogus\" \"http\"           port=0      err=\"address bogus: unknown network\"",
+    "\"bogus\" \"80\"             port=80     err=\"<nil>\"",
+    "\"tcp\"  \"nosuchservice\"  port=0      err=\"lookup tcp/nosuchservice: unknown port\"",
+    "\"tcp\"  \"HTTP\"           port=80     err=\"<nil>\"",
+    "\"tcp\"  \"+80\"            port=80     err=\"<nil>\"",
+    "\"tcp\"  \" 80\"            port=0      err=\"lookup tcp/ 80: unknown port\"",
+    "\"tcp\"  \"080\"            port=80     err=\"<nil>\"",
+];
+// darwin/arm64: macOS's /etc/services lists http on 80/udp as well as
+// 80/tcp, so Go on darwin/arm64 (cgo or not) resolves udp/http to 80.
+#[cfg(target_os = "macos")]
+const GO: [&str; 24] = [
+    "\"tcp\"  \"80\"             port=80     err=\"<nil>\"",
+    "\"tcp\"  \"0\"              port=0      err=\"<nil>\"",
+    "\"tcp\"  \"65535\"          port=65535  err=\"<nil>\"",
+    "\"tcp\"  \"65536\"          port=0      err=\"address 65536: invalid port\"",
+    "\"tcp\"  \"-1\"             port=0      err=\"address -1: invalid port\"",
+    "\"tcp\"  \"\"               port=0      err=\"<nil>\"",
+    "\"tcp\"  \"http\"           port=80     err=\"<nil>\"",
+    "\"tcp\"  \"https\"          port=443    err=\"<nil>\"",
+    "\"tcp\"  \"ssh\"            port=22     err=\"<nil>\"",
+    "\"tcp\"  \"smtp\"           port=25     err=\"<nil>\"",
+    "\"tcp\"  \"gopher\"         port=70     err=\"<nil>\"",
+    "\"tcp\"  \"submissions\"    port=465    err=\"<nil>\"",
+    "\"udp\"  \"domain\"         port=53     err=\"<nil>\"",
+    "\"udp\"  \"http\"           port=80     err=\"<nil>\"",
     "\"\"     \"http\"           port=80     err=\"<nil>\"",
     "\"ip\"   \"http\"           port=80     err=\"<nil>\"",
     "\"tcp4\" \"http\"           port=80     err=\"<nil>\"",

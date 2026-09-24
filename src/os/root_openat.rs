@@ -259,12 +259,12 @@ impl Root {
                     i += 1;
                     continue;
                 }
-                // ELOOP (40) and ENOTDIR (20) are how O_NOFOLLOW reports
+                // ELOOP and ENOTDIR are how O_NOFOLLOW reports
                 // a symlink — ENOTDIR because a symlink used as a
                 // directory component fails that way. Anything else is
                 // the real error.
                 e = -fd;
-                if e != 40 && e != 20 {
+                if e != syscall::ELOOP.0 && e != syscall::ENOTDIR.0 {
                     if dirfd != rootfd {
                         syscall::Close(dirfd);
                     }

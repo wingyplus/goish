@@ -244,14 +244,44 @@ const GO: [&str; 171] = [
     "env root-mismatch          SERVER_SOFTWARE=go",
 ];
 
+// The one line Go prints on macOS and not on Linux, and where it goes.
+//
+// Go passes a header named "X-Dot.Sep" through as HTTP_X_DOT.SEP —
+// upperCaseAndUnderscore (net/http/cgi/host.go:393-407) maps only '-'
+// and '=' to '_' — and the child that prints the environment is a
+// shell script. GO above is the Linux run, which does not show the
+// variable; on darwin/arm64 the same generator under Go 1.26.4 prints
+// GO plus exactly this line, in this position, and nothing else
+// differs (measured). The likely reason — inferred, not measured on
+// Linux — is the shell: dash, Linux's usual /bin/sh, does not pass an
+// environment entry whose name is not a valid identifier on to `env`,
+// while macOS's /bin/sh (bash) does.
+#[cfg(target_os = "macos")]
+const DARWIN_EXTRA: Option<(usize, &str)> =
+    Some((21, "env headers                HTTP_X_DOT.SEP=dotted"));
+#[cfg(not(target_os = "macos"))]
+const DARWIN_EXTRA: Option<(usize, &str)> = None;
+
+fn pinned_len() -> usize {
+    return GO.len() + if DARWIN_EXTRA.is_some() { 1 } else { 0 };
+}
+
+fn pinned(i: usize) -> &'static str {
+    match DARWIN_EXTRA {
+        Some((at, line)) if i == at => line,
+        Some((at, _)) if i > at => GO[i - 1],
+        _ => GO[i],
+    }
+}
+
 fn chk(failed: &mut int, ln: &mut int, got: string) {
-    if *ln >= GO.len() as int {
+    if *ln >= pinned_len() as int {
         fmt::Printf!("[!!] extra line %d: %q\n", *ln + 1, got);
         *failed += 1;
         *ln += 1;
         return;
     }
-    let want = s(GO[*ln as usize]);
+    let want = s(pinned(*ln as usize));
     *ln += 1;
     if got == want {
         return;
@@ -402,8 +432,8 @@ fn main() {
     }
     let _ = os::RemoveAll(dir);
     let _ = Arc::new(0);
-    if ln != GO.len() as int {
-        fmt::Printf!("[!!] produced %d lines, pinned %d\n", ln, GO.len() as int);
+    if ln != pinned_len() as int {
+        fmt::Printf!("[!!] produced %d lines, pinned %d\n", ln, pinned_len() as int);
         failed += 1;
     }
     if failed == 0 {

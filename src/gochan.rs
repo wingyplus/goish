@@ -499,7 +499,8 @@ impl<T> chan<T> {
     /// happens before lock acquisition).
     #[doc(hidden)]
     #[inline(never)]
-    #[link_section = "goish_rt_text"]
+    #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     pub fn __try_recv_locked(s: &mut HchanState<T>) -> Option<(T, bool)>
     where
         T: Default,
@@ -550,7 +551,8 @@ impl<T> chan<T> {
     /// chan-lock acquisition.
     #[doc(hidden)]
     #[inline(never)]
-    #[link_section = "goish_rt_text"]
+    #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     pub fn __try_send_locked(s: &mut HchanState<T>, v: T) -> Result<(), T> {
         if s.closed {
             fatal(b"goish: chan: send on closed channel\n");
@@ -627,7 +629,8 @@ fn fatal(msg: &[u8]) -> ! {
 /// For non-select sudogs (`coord == None`) the CAS is skipped and
 /// the waker always succeeds.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn try_claim_sudog<T>(sg: NonNull<Sudog<T>>) -> bool {
     let coord_opt = unsafe { (*sg.as_ptr()).coord };
     let coord = match coord_opt {
@@ -650,7 +653,8 @@ impl<T> chan<T> {
     /// Panics on closed chan — Go semantics for `c <- v`.
     #[doc(hidden)]
     #[inline(never)]
-    #[link_section = "goish_rt_text"]
+    #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     pub fn __try_send(&self, v: T) -> Result<(), T> {
         let mut s = self.inner.state.lock();
         if s.closed {
@@ -701,7 +705,8 @@ impl<T> chan<T> {
     /// available. Returns `None` if the operation would block.
     #[doc(hidden)]
     #[inline(never)]
-    #[link_section = "goish_rt_text"]
+    #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     pub fn __try_recv(&self) -> Option<(T, bool)>
     where
         T: Default,
@@ -794,7 +799,8 @@ impl<T> chan<T> {
     /// (b) identify the winning case in one pass.
     #[doc(hidden)]
     #[inline(never)]
-    #[link_section = "goish_rt_text"]
+    #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     pub fn __cancel_send(&self, sg: NonNull<Sudog<T>>) -> bool {
         let mut s = self.inner.state.lock();
         s.sendq.cancel(sg.as_ptr())
@@ -804,7 +810,8 @@ impl<T> chan<T> {
     /// winner/loser convention as `__cancel_send`.
     #[doc(hidden)]
     #[inline(never)]
-    #[link_section = "goish_rt_text"]
+    #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     pub fn __cancel_recv(&self, sg: NonNull<Sudog<T>>) -> bool {
         let mut s = self.inner.state.lock();
         s.recvq.cancel(sg.as_ptr())
@@ -830,7 +837,8 @@ impl<T> chan<T> {
     /// time it can `goready` us our gobuf is already a valid
     /// suspended snapshot.
     #[inline(never)]
-    #[link_section = "goish_rt_text"]
+    #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     pub fn Send(&self, v: T) {
         // nil chan — block forever (Go runtime/chan.go:177-183).
         // No lock to acquire, no commit fn touches state.
@@ -900,7 +908,8 @@ impl<T> chan<T> {
     /// Same multi-M lock discipline as `Send` — see the comment
     /// there.
     #[inline(never)]
-    #[link_section = "goish_rt_text"]
+    #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     pub fn Recv(&self) -> (T, bool)
     where
         T: Default,
@@ -966,7 +975,8 @@ impl<T> chan<T> {
     /// This keeps "close on multiple chans of one select" from
     /// firing more than one case of that select.
     #[inline(never)]
-    #[link_section = "goish_rt_text"]
+    #[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
     pub fn Close(&self) {
         // close(nil chan) panics per Go (runtime/chan.go closechan).
         if self.inner.nil {

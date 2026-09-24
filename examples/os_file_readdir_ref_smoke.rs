@@ -34,12 +34,25 @@ use goish::string;
 static FAILED: AtomicUsize = AtomicUsize::new(0);
 static SEEN: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(not(target_os = "macos"))]
 static GO: [&str; 6] = [
     "all n=4 err=<nil> [a.txt:false b.txt:false c.txt:false sub:true]",
     "batch1 n=2 err=<nil>",
     "batch2 n=2 err=<nil>",
     "batch3 n=0 err=EOF (io.EOF=true)",
     "infos n=4 err=<nil> [a.txt:false:1 b.txt:false:1 c.txt:false:1 sub:true:4096]",
+    "infos-after-drain n=0 err=EOF",
+];
+// darwin/arm64: the same program run by Go on darwin/arm64. A directory's
+// Size() is the filesystem's own number — 4096 on ext4, and on APFS a
+// small count that grows with the entries (64 for this one).
+#[cfg(target_os = "macos")]
+static GO: [&str; 6] = [
+    "all n=4 err=<nil> [a.txt:false b.txt:false c.txt:false sub:true]",
+    "batch1 n=2 err=<nil>",
+    "batch2 n=2 err=<nil>",
+    "batch3 n=0 err=EOF (io.EOF=true)",
+    "infos n=4 err=<nil> [a.txt:false:1 b.txt:false:1 c.txt:false:1 sub:true:64]",
     "infos-after-drain n=0 err=EOF",
 ];
 

@@ -29,6 +29,11 @@
 #   EXCLUDE=regex    skip examples matching this pattern
 #                    (default: long-running / interactive — see below)
 #   TARGET_DIR=...   cargo target dir (default target/x86_64-unknown-linux-gnu/debug)
+#   EXAMPLES_FILE=.. take example names from this allowlist (one per
+#                    line, `#` comments) instead of Cargo.toml's
+#                    declarations — for a target where only a known-good
+#                    subset works yet (e.g. scripts/linux_arm64_examples.txt).
+#                    FILTER and EXCLUDE still apply on top.
 #
 # Exit code: 0 if every iteration of every example passes; 1 otherwise.
 
@@ -138,11 +143,29 @@ EXAMPLES_DIR="$TARGET_DIR/examples"
 mkdir -p "$ARTIFACTS"
 rm -f "$ARTIFACTS"/*.log "$ARTIFACTS"/summary.txt
 
-# Discover declared examples from Cargo.toml.
-DECLARED=$(grep -E '^name = "[^"]+"$' Cargo.toml \
-           | grep -v 'name = "goish"' \
-           | sed 's/name = "//;s/"$//' \
-           | sort -u)
+# Discover declared examples from Cargo.toml — or, with EXAMPLES_FILE,
+# from an allowlist. The allowlist cannot be expressed as a FILTER over
+# the declared set: most of its entries are auto-discovered examples
+# with no `[[example]]` block, which the Cargo.toml scan never sees.
+if [[ -n "${EXAMPLES_FILE:-}" ]]; then
+  DECLARED=$(grep -v '^[[:space:]]*#' "$EXAMPLES_FILE" | grep -v '^[[:space:]]*$' | sort -u)
+else
+  DECLARED=$(grep -E '^name = "[^"]+"$' Cargo.toml \
+             | grep -v 'name = "goish"' \
+             | sed 's/name = "//;s/"$//' \
+             | sort -u)
+fi
+
+# `timeout` is GNU coreutils. macOS ships none; Homebrew's coreutils
+# installs it as `gtimeout`. Resolve once rather than fail per example.
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_BIN=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_BIN=gtimeout
+else
+  echo "e2e: no \`timeout\` or \`gtimeout\` on PATH (macOS: brew install coreutils)" >&2
+  exit 2
+fi
 
 # Apply FILTER + EXCLUDE.
 TARGETS=()
@@ -195,13 +218,13 @@ for name in "${TARGETS[@]}"; do
     if [[ -n "$ex_stdin" ]]; then
       # Stdin-driven demo (e.g. json_pretty).
       # shellcheck disable=SC2086
-      out=$(printf '%s' "$ex_stdin" | timeout "$ex_timeout" "$bin" $ex_args 2>&1)
+      out=$(printf '%s' "$ex_stdin" | "$TIMEOUT_BIN" "$ex_timeout" "$bin" $ex_args 2>&1)
     elif [[ -n "$ex_args" ]]; then
       # Argv-driven demo.
       # shellcheck disable=SC2086
-      out=$(timeout "$ex_timeout" "$bin" $ex_args 2>&1)
+      out=$("$TIMEOUT_BIN" "$ex_timeout" "$bin" $ex_args 2>&1)
     else
-      out=$(timeout "$ex_timeout" "$bin" 2>&1)
+      out=$("$TIMEOUT_BIN" "$ex_timeout" "$bin" 2>&1)
     fi
     rc=$?
     # rc=0 wins regardless of stdout content. Tests that intentionally

@@ -1,0 +1,12 @@
+# Examples known green on aarch64-unknown-linux-gnu, one per line.
+#
+# A ratchet in the same spirit as scripts/lint_baseline.json: it only
+# grows, and a milestone is not done until its examples are in here and
+# passing. `--examples` is never used for this target — a full build is
+# ~50 GiB of static ELF and most of it cannot work yet.
+#
+# M1 (boot): the entry stub, args, flags, the thread pointer, dlmalloc,
+# mheap, mcentral and the P array all run. The scheduler does not — the
+# staged `__goish_rt0` calls the user main directly on g0, so anything
+# that parks a goroutine is out of scope until M5 lands `gogo`.
+hello

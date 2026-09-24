@@ -199,13 +199,15 @@ pub use crate::io::fs::{
 // as `int` (= i64) so port-side `var flag int = os.O_RDWR | os.O_TRUNC`
 // arithmetic stays width-uniform without per-callsite `as i32` casts.
 pub const O_RDONLY: int = syscall::O_RDONLY as int;
-pub const O_WRONLY: int = 0o1;
-pub const O_RDWR: int = 0o2;
-pub const O_CREATE: int = 0o100;
-pub const O_TRUNC: int = 0o1000;
-pub const O_APPEND: int = 0o2000;
-pub const O_EXCL: int = 0o200;
-pub const O_SYNC: int = 0o4010000;
+// From `syscall`, as Go's os/file.go does: the numbers are per-OS
+// (O_CREAT is 0x40 on Linux and 0x200 on Darwin).
+pub const O_WRONLY: int = syscall::O_WRONLY as int;
+pub const O_RDWR: int = syscall::O_RDWR as int;
+pub const O_CREATE: int = syscall::O_CREAT as int;
+pub const O_TRUNC: int = syscall::O_TRUNC as int;
+pub const O_APPEND: int = syscall::O_APPEND as int;
+pub const O_EXCL: int = syscall::O_EXCL as int;
+pub const O_SYNC: int = syscall::O_SYNC as int;
 
 pub const PathSeparator: u8 = b'/';
 pub const PathListSeparator: u8 = b':';
@@ -570,6 +572,18 @@ pub fn OpenFile<N: Into<string>, M: Into<FileMode>>(
     let name: string = name.into();
     let perm: FileMode = perm.into();
     // Build a NUL-terminated path for the kernel.
+    // Go: on the BSDs a created file does not take the sticky bit from
+    // its mode; remember to set it after (os/file_unix.go:247-252).
+    let mut setSticky = false;
+    if !supportsCreateWithStickyBit
+        && (flag & O_CREATE) != 0
+        && (perm & ModeSticky) != FileMode(0)
+    {
+        let (_, err) = Stat(name.clone());
+        if IsNotExist(err) {
+            setSticky = true;
+        }
+    }
     let mut buf: Vec<u8> = Vec::with_capacity(name.Len() as usize + 1);
     let nb = bytes_of(&name);
     buf.extend_from_slice(nb);
@@ -597,6 +611,10 @@ pub fn OpenFile<N: Into<string>, M: Into<FileMode>>(
                 Err: syscall::Errno(-fd).into(),
             }),
         );
+    }
+    // Go: os/file_unix.go:269-271.
+    if setSticky {
+        let _ = setStickyBit(name.clone());
     }
     (
         nilable::new(File {
@@ -1307,13 +1325,13 @@ pub fn Chdir<N: Into<string>>(name: N) -> error {
 fn syscallMode(i: FileMode) -> u32 {
     let mut o: u32 = i.Perm().0;
     if (i & ModeSetuid) != FileMode(0) {
-        o |= syscall::S_ISUID;
+        o |= u32::from(syscall::S_ISUID);
     }
     if (i & ModeSetgid) != FileMode(0) {
-        o |= syscall::S_ISGID;
+        o |= u32::from(syscall::S_ISGID);
     }
     if (i & ModeSticky) != FileMode(0) {
-        o |= syscall::S_ISVTX;
+        o |= u32::from(syscall::S_ISVTX);
     }
     // Go: "No mapping for Go's ModeTemporary (plan9 only)."
     return o;
@@ -1802,7 +1820,33 @@ pub fn Mkdir<N: Into<string>, M: Into<FileMode>>(name: N, perm: M) -> error {
             Err: syscall::Errno(-rc).into(),
         });
     }
+    // Go: mkdir(2) itself won't handle the sticky bit on *BSD and
+    // Solaris, so set it afterwards (os/file.go:337-345).
+    if !supportsCreateWithStickyBit && (perm & ModeSticky) != FileMode(0) {
+        let e = setStickyBit(name.clone());
+        if !e.IsNil() {
+            let _ = Remove(name);
+            return e;
+        }
+    }
     nil
+}
+
+// go: sdk 1.25.5 os/sticky_bsd.go:11 supportsCreateWithStickyBit
+/// Whether creating a file or directory honours the sticky bit in its
+/// mode. False on the BSDs, macOS included (os/sticky_bsd.go).
+#[cfg(target_os = "macos")]
+const supportsCreateWithStickyBit: bool = false;
+#[cfg(not(target_os = "macos"))]
+const supportsCreateWithStickyBit: bool = true;
+
+// go: sdk 1.25.5 os/file.go:351-357 setStickyBit
+fn setStickyBit(name: string) -> error {
+    let (fi, err) = Stat(name.clone());
+    if !err.IsNil() {
+        return err;
+    }
+    Chmod(name, fi.Mode() | ModeSticky)
 }
 
 #[path = "path.rs"]
@@ -2239,7 +2283,7 @@ impl File {
             // it is the same shape net's TCPConn.Close reports.
             return self.wrapErr("close", ErrClosed.into());
         }
-        let rc = unsafe { syscall::syscall1(syscall::SYS_CLOSE, self.fd as usize) };
+        let rc = syscall::Close(self.fd) as isize;
         let old_fd = self.fd;
         self.fd = -1;
         if rc < 0 {
@@ -2257,7 +2301,7 @@ impl File {
         if self.fd < 0 {
             return self.wrapErr("sync", ErrClosed.into());
         }
-        let rc = unsafe { syscall::syscall1(syscall::SYS_FSYNC, self.fd as usize) };
+        let rc = syscall::Fsync(self.fd) as isize;
         if rc < 0 {
             self.fdErr("sync", rc)
         } else {

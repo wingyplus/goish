@@ -7,16 +7,18 @@
 #![no_std]
 #![no_main]
 #![allow(non_snake_case)]
+#![cfg_attr(target_os = "macos", allow(unused))]
 
 extern crate alloc;
 extern crate goish;
 
 use goish::{fmt, int, int32, nil, os, string, strings, syscall};
 
+#[cfg(not(target_os = "macos"))]
 const GO: &str = include_str!("syscall_openat_ref.txt");
 
-#[goish::main]
-fn main() {
+#[cfg(not(target_os = "macos"))]
+fn run() {
     let root = string::from_static("/tmp/goish_openat_ref");
     let _ = os::Remove(root.clone() + "/link");
     let _ = os::RemoveAll(root.clone());
@@ -126,4 +128,16 @@ fn main() {
     let message = b"SYSCALL_OPENAT_REF_OK Go 1.25.5 transcript matched\n";
     syscall::Write(syscall::STDOUT, message.as_ptr(), message.len());
     syscall::Exit(0);
+}
+
+// Go's `syscall.Openat` exists only on Linux (and a few others); on
+// darwin it is `golang.org/x/sys/unix.Openat`, so there is no Go darwin
+// output to pin and the O_* constants row is Linux's by definition.
+// goish's darwin Openat is exercised through `os.Root` instead.
+#[goish::main]
+fn main() {
+    #[cfg(not(target_os = "macos"))]
+    run();
+    #[cfg(target_os = "macos")]
+    fmt::Println!("syscall_openat_ref_smoke: SKIP (Go has no syscall.Openat on darwin)");
 }

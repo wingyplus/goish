@@ -51,6 +51,7 @@ use goish::os::signal;
 use goish::{fmt, string, syscall, time};
 
 /// Go's output, verbatim.
+#[cfg(not(target_os = "macos"))]
 const GO: [&str; 7] = [
     "one-signal                 got=[user defined signal 1]",
     "unregistered               got=[]",
@@ -59,6 +60,19 @@ const GO: [&str; 7] = [
     "full-channel-drops         got=1",
     "stop-one-channel           c1=[user defined signal 1] c2=[]",
     "notify-all                 got={user defined signal 1, user defined signal 2, window changed}",
+];
+// darwin/arm64: Go's darwin signal table names SIGWINCH "window size
+// changes" (syscall/zerrors_darwin_arm64.go), not Linux's "window
+// changed"; every other row renders the same.
+#[cfg(target_os = "macos")]
+const GO: [&str; 7] = [
+    "one-signal                 got=[user defined signal 1]",
+    "unregistered               got=[]",
+    "two-channels               c1=[user defined signal 1] c2=[user defined signal 1]",
+    "notify-additive            got=[user defined signal 2]",
+    "full-channel-drops         got=1",
+    "stop-one-channel           c1=[user defined signal 1] c2=[]",
+    "notify-all                 got={user defined signal 1, user defined signal 2, window size changes}",
 ];
 
 static mut FAILED: i64 = 0;
@@ -288,11 +302,11 @@ fn main() {
     signal::Notify(&c4, &[]);
     me(syscall::SIGUSR1);
     me(syscall::SIGUSR2);
-    me(28);
+    me(syscall::SIGWINCH);
     chk(fmt::Sprintf!(
         "%-26s got=%s",
         string("notify-all"),
-        drain_set(&c4, 300, &[syscall::SIGUSR1, syscall::SIGUSR2, 28])
+        drain_set(&c4, 300, &[syscall::SIGUSR1, syscall::SIGUSR2, syscall::SIGWINCH])
     ));
     signal::Stop(&c4);
     signal::Stop(&c1);

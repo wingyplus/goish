@@ -121,11 +121,18 @@ pub fn set_bare_reserve(bytes: usize) -> usize {
     prev
 }
 
-/// Guard region below reserved / large stacks: one `PROT_NONE` page.
-/// Overflow lands here and `runtime::segv::classify` (which treats
-/// faults within one page below `stack.base()` as home-stack
-/// overflow) produces the spawn-site diagnostic.
-pub const GUARD_SIZE: usize = PAGE_SIZE;
+/// Guard region below reserved / large stacks: one `PROT_NONE`
+/// **kernel** page. Overflow lands here and `runtime::segv::classify`
+/// (which treats faults within `GUARD_SIZE` below `stack.base()` as
+/// home-stack overflow) produces the spawn-site diagnostic.
+///
+/// The kernel page, not `PAGE_SIZE`: `mprotect` rounds its length up
+/// to whole kernel pages, so on Darwin's 16 KiB pages a 4 KiB guard
+/// would protect 16 KiB — the bottom 12 KiB of the *usable* stack —
+/// and an overflow would fault above `base()`, outside the window
+/// `segv` looks in. (Go has no counterpart to cite: its goroutine
+/// stacks are bounded by `morestack` checks, not guard pages.)
+pub const GUARD_SIZE: usize = crate::sys::PHYS_PAGE_SIZE;
 
 /// Max recycled reservations parked in `RESERVE_POOL`. Beyond this,
 /// Drop munmaps instead. 256 × 1 MiB = 256 MiB of cached *virtual*
@@ -139,8 +146,12 @@ const RESERVE_POOL_CAP: usize = 256;
 #[deprecated(note = "use DEFAULT_STACK_SIZE or Stack::new_sized(N)")]
 pub const STACK_SIZE: usize = 64 * 1024;
 
-/// Page granularity (mmap minimum allocation). Used to round
-/// caller-requested stack sizes up to a whole page.
+/// Rounding granule for caller-requested stack sizes. Deliberately
+/// **not** the kernel page on every target: on Darwin it is a quarter
+/// of one, which is harmless because nothing is `mprotect`ed at this
+/// granularity — `mmap`/`munmap` round the length up identically, and
+/// the guard uses `GUARD_SIZE`. Kept at 4 KiB so the usable size a
+/// caller asks for is the size it gets on every target.
 pub const PAGE_SIZE: usize = 4096;
 
 /// A goroutine stack. The storage source depends on `owned`,

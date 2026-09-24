@@ -150,7 +150,8 @@ fn globrunqget_locked_for_owner() -> Option<NonNull<G>> {
 /// step (4) is always non-blocking — sysmon's tick is the fallback
 /// for the "all Ps idle" case in v1.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn find_runnable() -> Option<NonNull<G>> {
     if let Some(g) = globrunqget_locked_for_owner() {
         return Some(g);
@@ -179,7 +180,8 @@ fn find_runnable() -> Option<NonNull<G>> {
 /// are covered by their own Ps, the idle blocking claimers, and
 /// sysmon's `poll_all` backstop.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn poll_netpoll_take_one() -> Option<NonNull<G>> {
     let shard = current_p().map(|p| p.id as usize).unwrap_or(0);
     let ready = crate::runtime::netpoll::poll_shard(shard, 0);
@@ -209,7 +211,8 @@ fn poll_netpoll_take_one() -> Option<NonNull<G>> {
 /// (if any) was published into the calling M's local runq by
 /// `runqsteal`. Returns `None` if four full passes turn up empty.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn steal_work() -> Option<NonNull<G>> {
     if !crate::runtime::flags::WORK_STEALING.load(Ordering::Relaxed) {
         return None;
@@ -271,7 +274,8 @@ fn steal_work() -> Option<NonNull<G>> {
 /// either we find work and don't park, or we push to MIDLE and the
 /// producer's subsequent `wake_idle_m` pops us.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn has_local_or_global_work() -> bool {
     if let Some(p) = current_p() {
         if p.runq_has_work() {
@@ -309,6 +313,18 @@ fn has_local_or_global_work() -> bool {
 /// don't contend with newproc/dispatch on the runq lock.
 static LIVE_G_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// Set once by a boot that is about to enter the dispatch loop — see
+/// `mark_dispatching`. Until then `enqueue_runnable` refuses new Gs.
+static DISPATCHING: AtomicBool = AtomicBool::new(false);
+
+/// Declare that this process's boot runs the scheduler: the main
+/// goroutine is about to be spawned and `m_schedule_loop` entered.
+/// Called by `__goish_rt0` on every target whose boot does so, and by
+/// none that calls the user's main directly on g0.
+pub fn mark_dispatching() {
+    DISPATCHING.store(true, Ordering::Release);
+}
+
 /// Push a goroutine onto the runnable set, routing through the bound
 /// P's runq (M17b-β) when available, otherwise to the global runq.
 ///
@@ -330,8 +346,21 @@ static LIVE_G_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// `runqput` then writes to a P this M no longer owns — violating the
 /// SPMC ring's single-writer invariant (`runqtail` and `runq[]` slots).
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn enqueue_runnable(g_ptr: NonNull<G>, next: bool) {
+    // A boot that never enters the dispatch loop — a staged port
+    // target calling the user's main directly on g0 — would queue this
+    // G and never run it, and a caller's `while !done { Gosched() }`
+    // (`Gosched` is a no-op off-goroutine) would spin forever. Abort
+    // loudly instead. A runtime flag rather than a `cfg`, so whichever
+    // target un-stages first turns its own guard off without touching
+    // the others'.
+    if !DISPATCHING.load(Ordering::Acquire) {
+        let msg = b"goish: goroutines are not available on this target's staged boot yet (M5): go! has no scheduler to run on\n";
+        crate::syscall::Write(crate::syscall::STDERR, msg.as_ptr(), msg.len());
+        crate::syscall::Exit(2);
+    }
     super::m::acquirem();
     let locked_m = unsafe { (*g_ptr.as_ptr()).locked_m.load(Ordering::Acquire) };
     if locked_m != 0 {
@@ -421,7 +450,8 @@ pub fn newproc_with_stack_at(
 /// user-visible call site.
 #[allow(non_snake_case)]
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub fn Gosched() {
     // Lock-free curg read (per-M, single-thread mutator). Taking
     // M's SpinLock here would risk a coop_preempt_check-driven
@@ -444,7 +474,8 @@ pub fn Gosched() {
 /// returns to this stack; the trampoline `unreachable_dead` is
 /// retained as a defensive marker.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn goexit() -> ! {
     unsafe {
         mcall(goexit0);
@@ -657,7 +688,8 @@ pub static G_PANIC_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::At
 // here (PC-range filter).
 
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn dispatch_g_trap_dump(label: &[u8], g_ptr: NonNull<G>) -> ! {
     use crate::syscall;
     let stderr = syscall::STDERR;
@@ -792,7 +824,8 @@ fn dispatch_g_trap_dump(label: &[u8], g_ptr: NonNull<G>) -> ! {
 }
 
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn dispatch_validate_g(g_ptr: NonNull<G>) {
     // Per-G stacks are now variable-sized (M26): every G stores its
     // own allocation size on `stack`. Validate that the stored bounds
@@ -846,7 +879,8 @@ fn dispatch_validate_g(g_ptr: NonNull<G>) {
 /// `m.curg` is `Some`). The Rust wrapper does no allocation and no
 /// SpinLock-Guard-spanning work between curg lookup and the asm call.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 unsafe fn mcall(fn_to_call: extern "C" fn(*mut G) -> !) {
     // **Bump m.locks across the wrapper.** Even with lock-free reads
     // below, SIGURG can land on user G's stack between the reads and
@@ -898,7 +932,8 @@ unsafe fn mcall(fn_to_call: extern "C" fn(*mut G) -> !) {
 /// goroutine is allocated lazily lays out the `Idle → Running` first
 /// frame via `make_context_gogo`.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn execute(mut g_ptr: NonNull<G>) -> ! {
     dispatch_validate_g(g_ptr);
     let g = unsafe { g_ptr.as_mut() };
@@ -1248,7 +1283,8 @@ pub fn schedule() {
 /// detects this via `checkdead` (proc.go:5566); goish v1 will hang
 /// in that case until M18b lands.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub(crate) fn schedule_loop() -> ! {
     loop {
         match find_runnable() {
@@ -1331,7 +1367,8 @@ fn any_runnable_anywhere() -> bool {
 /// dominates keep-alive serving. The tail (batch arrivals) is
 /// goready'd as before: those wakes recruit Ms for real work.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn block_as_netpoller(shard: usize) -> Option<NonNull<G>> {
     // Final re-check AFTER claiming the shard: a producer that
     // pushed work before observing our claim will not have sent a
@@ -1363,7 +1400,8 @@ fn block_as_netpoller(shard: usize) -> Option<NonNull<G>> {
 /// On worker Ms this is a no-op — workers remain parked forever and
 /// are reaped by `exit_group(2)` from the main M's `Exit`.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn maybe_exit_main_m() {
     let id = current_m().lock().id;
     if id == 0 {
@@ -1477,7 +1515,8 @@ pub static DISPATCH_STAMP_COUNT: AtomicUsize = AtomicUsize::new(0);
 ///
 /// Mirror of Go's `stopm` (proc.go:2997) → `mPark` (proc.go:1972).
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 fn park_m_idle() {
     let storage = current_m_storage();
 
@@ -1518,7 +1557,8 @@ fn park_m_idle() {
 /// Mirror of Go's `wakep` (proc.go:3217) + `startm`-on-wakep
 /// (proc.go:3040).
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub fn wake_idle_m() {
     let storage = match MIDLE.lock().pop() {
         Some(s) => s,
@@ -1582,7 +1622,8 @@ fn wake_all_idle_m() {
 /// the only thing that could still racily push more work, and by
 /// then exit_group has already replaced this thread anyway.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub fn m_schedule_loop() -> ! {
     // M17b-ε: schedule_loop() is the unified dispatch loop under the
     // mcall pattern; it never returns. The main-vs-worker shutdown
@@ -1603,6 +1644,7 @@ pub fn live_g_count() -> usize {
 /// affinity buffer is generous enough for any plausible host
 /// (65 536 CPUs); a popcount over the returned bytes gives the
 /// effective parallelism.
+#[cfg(target_os = "linux")]
 pub fn num_cpus() -> usize {
     const MAX_CPUS: usize = 64 * 1024;
     let mut buf = [0u8; MAX_CPUS / 8];
@@ -1625,6 +1667,7 @@ pub fn num_cpus() -> usize {
 /// Read a small kernel pseudo-file without libc. `path` must be
 /// NUL-terminated. The files used here are one-line cgroup controls,
 /// so a single fixed buffer is sufficient.
+#[cfg(target_os = "linux")]
 fn read_control_file(path: &[u8], buf: &mut [u8]) -> Option<usize> {
     let fd = crate::syscall::Open(
         path.as_ptr(),
@@ -1643,6 +1686,7 @@ fn read_control_file(path: &[u8], buf: &mut [u8]) -> Option<usize> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn parse_decimal(input: &[u8]) -> Option<usize> {
     if input.is_empty() {
         return None;
@@ -1660,6 +1704,7 @@ fn parse_decimal(input: &[u8]) -> Option<usize> {
 /// Parse cgroup v2's `cpu.max`: either `max PERIOD` or `QUOTA PERIOD`.
 /// Fractional CPU quotas require one runnable P, so round up just as Go's
 /// container-aware default does.
+#[cfg(target_os = "linux")]
 fn parse_cpu_max(input: &[u8]) -> Option<usize> {
     let mut fields = input
         .split(|byte| byte.is_ascii_whitespace())
@@ -1676,6 +1721,7 @@ fn parse_cpu_max(input: &[u8]) -> Option<usize> {
     Some((quota / period + usize::from(quota % period != 0)).max(1))
 }
 
+#[cfg(target_os = "linux")]
 fn read_decimal_control(path: &[u8]) -> Option<usize> {
     let mut buf = [0u8; 64];
     let n = read_control_file(path, &mut buf)?;
@@ -1687,6 +1733,7 @@ fn read_decimal_control(path: &[u8]) -> Option<usize> {
 
 /// Effective CPU quota exposed through the process's cgroup namespace.
 /// Prefer cgroup v2 and retain the legacy v1 CPU controller fallback.
+#[cfg(target_os = "linux")]
 fn cgroup_cpu_limit() -> Option<usize> {
     const CPU_MAX: &[u8] = b"/sys/fs/cgroup/cpu.max\0";
     let mut buf = [0u8; 64];
@@ -1702,6 +1749,12 @@ fn cgroup_cpu_limit() -> Option<usize> {
         return None;
     }
     Some((quota / period + usize::from(quota % period != 0)).max(1))
+}
+
+/// No cgroups outside Linux: the quota never lowers the CPU count.
+#[cfg(not(target_os = "linux"))]
+fn cgroup_cpu_limit() -> Option<usize> {
+    None
 }
 
 /// Number of Ps and Ms to create during runtime bootstrap.
@@ -1745,6 +1798,23 @@ pub fn startup_procs() -> usize {
         fallback
     } else {
         parsed.min(super::p::MAX_PS)
+    }
+}
+
+/// Number of CPUs, from `sysctl({CTL_HW, HW_NCPU})`. Returns 1 on
+/// failure or a non-positive answer.
+///
+/// Darwin has no affinity masks to count, so this is not
+/// `SchedGetaffinity` under another name — it is Go's darwin
+/// `getCPUCount` (`runtime/os_darwin.go`), which asks the MIB directly.
+/// Same fallback as the Linux arm.
+#[cfg(target_os = "macos")]
+pub fn num_cpus() -> usize {
+    const CTL_HW: i32 = 6;
+    const HW_NCPU: i32 = 3;
+    match unsafe { crate::sys::sys_sysctl_u32(CTL_HW, HW_NCPU) } {
+        Some(n) if n as i32 > 0 => n as usize,
+        _ => 1,
     }
 }
 
@@ -1840,8 +1910,6 @@ fn spawn_worker_m(id: u32) -> i64 {
         syscall::Write(syscall::STDERR, MSG.as_ptr(), MSG.len());
         syscall::Exit(2);
     }
-    let stack_top = unsafe { stack_base.add(WORKER_M_STACK) };
-
     // M17b-ε.α: allocate this worker's `g0` BEFORE clone(2). The
     // mmap'd 64 KiB region we just got is the OS thread stack — i.e.,
     // exactly what `g0.stack` adopts. Storing the pointer in
@@ -1855,13 +1923,36 @@ fn spawn_worker_m(id: u32) -> i64 {
     let g0_ptr: *mut super::g::G = alloc::boxed::Box::leak(g0_box) as *mut _;
     storage.g0.store(g0_ptr, Ordering::Release);
 
+    start_os_thread(storage, stack_base, WORKER_M_STACK, mstart)
+}
+
+/// Start the OS thread behind `storage`, running `entry` on the stack
+/// `[stack_base, stack_base + size)` with its thread pointer already
+/// set to `storage`. Returns the new thread's id (Linux: the kernel
+/// tid; Darwin: 0 or more on success, since the `pthread_t` is stored
+/// in `storage.pthread` instead), or `-errno`.
+pub fn start_os_thread(
+    storage: &'static super::m::MStorage,
+    stack_base: *mut u8,
+    size: usize,
+    entry: extern "C" fn() -> !,
+) -> i64 {
+    #[cfg(target_os = "linux")]
     unsafe {
-        syscall::Clone(
-            syscall::CLONE_THREAD_FLAGS,
-            stack_top,
-            mstart,
+        crate::syscall::Clone(
+            crate::syscall::CLONE_THREAD_FLAGS,
+            stack_base.add(size),
+            entry,
             storage.tls_base() as u64,
         )
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let t = unsafe { crate::syscall::NewThread(stack_base, size, entry, storage.tls_base()) };
+        if t > 0 {
+            storage.pthread.store(t as usize, Ordering::Release);
+        }
+        t as i64
     }
 }
 
@@ -1998,7 +2089,8 @@ pub fn unlock_os_thread() {
 /// picks it up. `lock_atom` may be null when the commit fn doesn't
 /// need it (e.g. `selparkcommit` walks `g.select_wait` instead).
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub fn gopark(commit: ParkCommit, lock_atom: *const AtomicBool) {
     // Lock-free curg read — see `mcall` for why taking the SpinLock
     // here is unsafe (coop_preempt_check can migrate us mid-call).
@@ -2044,7 +2136,8 @@ pub fn gopark(commit: ParkCommit, lock_atom: *const AtomicBool) {
 /// `Recv` on a nil chan; in `select!` nil cases are filtered before
 /// the lock-order pass and never reach gopark.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub unsafe fn block_forever_commit(_g: NonNull<G>) -> bool {
     true
 }
@@ -2062,7 +2155,8 @@ pub unsafe fn block_forever_commit(_g: NonNull<G>) -> bool {
 /// `lock_atom` in `M::waitlock` and the calling thread must hold
 /// that lock at entry.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub unsafe fn chan_park_commit(_g: NonNull<G>) -> bool {
     let atom = current_m().lock().waitlock;
     debug_assert!(!atom.is_null(), "chan_park_commit: no waitlock");
@@ -2087,7 +2181,8 @@ pub unsafe fn chan_park_commit(_g: NonNull<G>) -> bool {
 /// the matching lock acquisitions before populating this list and
 /// calling `gopark(selparkcommit, _)`.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub unsafe fn selparkcommit(g_ptr: NonNull<G>) -> bool {
     let g = &mut *g_ptr.as_ptr();
     let n = g.select_wait_len as usize;
@@ -2126,7 +2221,8 @@ pub unsafe fn selparkcommit(g_ptr: NonNull<G>) -> bool {
 /// pre-bootstrap callers). `wake_idle_m` ensures a parked M picks
 /// up the work whether it's local or global.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub fn goready(g_ptr: NonNull<G>) {
     unsafe {
         debug_assert_eq!(

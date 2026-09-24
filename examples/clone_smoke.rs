@@ -21,6 +21,8 @@
 
 #![no_std]
 #![no_main]
+// Everything but `main` is the Linux clone(2) test; see `main`.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
@@ -61,6 +63,24 @@ const STACK_SIZE: usize = 64 * 1024;
 
 #[goish::main]
 fn main() {
+    #[cfg(target_os = "linux")]
+    run();
+    // What this pins is clone(2) itself: the raw flags, the child
+    // trampoline on a caller stack, and the kernel tid clone returns
+    // matching the child's gettid. Darwin has no clone — its threads
+    // are pthreads, created through `syscall::NewThread`, which hands
+    // back a `pthread_t`, not a tid — so there is nothing here to run.
+    // The portable half (a thread on a caller-owned stack with its own
+    // thread pointer, distinct ids) is tls_smoke, which runs on both.
+    #[cfg(not(target_os = "linux"))]
+    {
+        const SKIP: &[u8] = b"clone_smoke: SKIP (Linux clone(2) interface)\n";
+        syscall::Write(syscall::STDOUT, SKIP.as_ptr(), SKIP.len());
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run() {
     let parent_tid = syscall::Gettid();
     check(parent_tid > 0, b"parent tid invalid\n");
 

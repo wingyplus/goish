@@ -4,12 +4,32 @@
 // (preempt.go:420 `name.HasPrefix("runtime.")`).
 //
 // Mechanism: every preempt-unsafe function in the goish runtime is
-// tagged with `#[link_section = "goish_rt_text"]` + `#[inline(never)]`.
+// tagged with `#[link_section = ...]` + `#[inline(never)]`.
 // The ELF linker auto-generates `__start_goish_rt_text` and
 // `__stop_goish_rt_text` symbols pointing to the section's bounds
 // because the section name is a valid C identifier (System V ABI).
 // The SIGURG handler checks the saved RIP against this range and
 // skips injection when the PC falls inside.
+//
+// **Neither half of that survives on Mach-O**, which is why the 46 tag
+// sites carry a `cfg_attr` pair and this file has a Darwin arm:
+//
+//   * A Mach-O section name is a `"__SEGMENT,__section"` pair, so the
+//     bare `"goish_rt_text"` is not merely unconventional there — rustc
+//     rejects it outright ("invalid Mach-O section specifier"). The
+//     Darwin spelling is
+//     `"__TEXT,__goish_rt_text,regular,pure_instructions"`. The two
+//     trailing attributes are not decoration: without them ld64 treats
+//     the section as data, and since the functions placed there carry
+//     unwind information it warns that "symbols ... have unwind
+//     information, but it's not a code section". A section of runtime
+//     code that the linker does not believe is code is precisely the
+//     wrong footing for the M8 PC-range check that will read it.
+//   * ld64 generates no `__start_`/`__stop_` bound symbols; its own
+//     spelling is `section$start$__TEXT$__goish_rt_text` and
+//     `section$end$…`, defined for any section it links. Those are
+//     link-time symbols like the ELF pair, so both targets answer
+//     `is_in_runtime()` the same way.
 //
 // **Why we need it**. The `m.locks` counter is an upper bound on
 // preempt-unsafe regions: every SpinLock guard bumps it. But there
@@ -34,6 +54,7 @@
 
 use core::sync::atomic::AtomicU64;
 
+#[cfg(not(target_os = "macos"))]
 extern "C" {
     /// First byte of the `goish_rt_text` section.
     pub static __start_goish_rt_text: u8;
@@ -47,10 +68,32 @@ extern "C" {
 /// Used by the SIGURG preempt handler to refuse injection on
 /// runtime PCs (mirrors Go's `name.HasPrefix("runtime.")` check at
 /// runtime/preempt.go:420).
+#[cfg(not(target_os = "macos"))]
 #[inline]
 pub fn is_in_runtime(pc: u64) -> bool {
     let start = unsafe { &__start_goish_rt_text as *const u8 as u64 };
     let end = unsafe { &__stop_goish_rt_text as *const u8 as u64 };
+    pc >= start && pc < end
+}
+
+// ld64's spelling of `__start_`/`__stop_`: for any section it links,
+// it defines `section$start$SEG$SECT` and `section$end$SEG$SECT`. The
+// leading `\x01` tells LLVM to emit the name verbatim, without the
+// Mach-O `_` prefix — ld64 matches the undecorated form.
+#[cfg(target_os = "macos")]
+extern "C" {
+    #[link_name = "\x01section$start$__TEXT$__goish_rt_text"]
+    static __start_goish_rt_text: u8;
+    #[link_name = "\x01section$end$__TEXT$__goish_rt_text"]
+    static __stop_goish_rt_text: u8;
+}
+
+/// Darwin: the same test, over ld64's synthesized section bounds.
+/// The PIE slide moves the symbols with the code, so no adjustment.
+#[cfg(target_os = "macos")]
+#[inline]
+pub fn is_in_runtime(pc: u64) -> bool {
+    let (start, end, _) = section_bounds();
     pc >= start && pc < end
 }
 
@@ -63,6 +106,16 @@ pub static SKIP_RUNTIME_PC: AtomicU64 = AtomicU64::new(0);
 /// `(start, end, length)`. Diagnostic — used by tests to verify
 /// the section was populated and that tagged functions land
 /// inside it.
+#[cfg(not(target_os = "macos"))]
+pub fn section_bounds() -> (u64, u64, u64) {
+    let start = unsafe { &__start_goish_rt_text as *const u8 as u64 };
+    let end = unsafe { &__stop_goish_rt_text as *const u8 as u64 };
+    (start, end, end.wrapping_sub(start))
+}
+
+/// Darwin: ld64's `section$start`/`section$end` for
+/// `__TEXT,__goish_rt_text`.
+#[cfg(target_os = "macos")]
 pub fn section_bounds() -> (u64, u64, u64) {
     let start = unsafe { &__start_goish_rt_text as *const u8 as u64 };
     let end = unsafe { &__stop_goish_rt_text as *const u8 as u64 };
@@ -74,7 +127,8 @@ pub fn section_bounds() -> (u64, u64, u64) {
 /// function is tagged yet (during incremental rollout). Always
 /// safe to keep — it's just a marker.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 #[no_mangle]
 pub extern "C" fn __goish_rt_text_anchor() -> u64 {
     // Reference our own address to defeat dead-code elimination of

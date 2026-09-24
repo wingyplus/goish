@@ -20,6 +20,7 @@ use crate::types::int;
 /// Rendering a signal by NAME is not cosmetic: "signal: killed" and
 /// "signal: 9" are the difference between an error a person can read
 /// and one they have to look up. goish printed the number.
+#[cfg(not(target_os = "macos"))]
 const signals: [&str; 32] = [
     "",
     "hangup",
@@ -53,6 +54,45 @@ const signals: [&str; 32] = [
     "I/O possible",
     "power failure",
     "bad system call",
+];
+
+/// darwin/arm64: the same table by Darwin's numbers (SIGUSR1 is 30
+/// here, SIGSYS 12), generated from Go's `syscall/zerrors_darwin_arm64.go`
+/// (`var signals`), which is what Go's `Signal.String` reads there.
+#[cfg(target_os = "macos")]
+const signals: [&str; 32] = [
+    "",
+    "hangup",
+    "interrupt",
+    "quit",
+    "illegal instruction",
+    "trace/BPT trap",
+    "abort trap",
+    "EMT trap",
+    "floating point exception",
+    "killed",
+    "bus error",
+    "segmentation fault",
+    "bad system call",
+    "broken pipe",
+    "alarm clock",
+    "terminated",
+    "urgent I/O condition",
+    "suspended (signal)",
+    "suspended",
+    "continued",
+    "child exited",
+    "stopped (tty input)",
+    "stopped (tty output)",
+    "I/O possible",
+    "cputime limit exceeded",
+    "filesize limit exceeded",
+    "virtual timer expired",
+    "profiling timer expired",
+    "window size changes",
+    "information request",
+    "user defined signal 1",
+    "user defined signal 2",
 ];
 
 // go: none — goish-only placement: Go's is `Signal.String`
@@ -267,6 +307,38 @@ impl ProcessState {
         return Some(self.rusage);
     }
 
+    // Go: `WaitStatus.Stopped`/`Continued`/`TrapCause`, which are per-OS.
+    // Linux (syscall/syscall_linux.go): stopped is a 0x7f low byte,
+    // continued is the whole word 0xffff, and the ptrace event sits in
+    // the byte above the stop signal.
+    #[cfg(not(target_os = "macos"))]
+    fn __stopped(&self) -> bool {
+        (self.status & 0xff) == 0x7f
+    }
+    #[cfg(not(target_os = "macos"))]
+    fn __continued(&self) -> bool {
+        self.status == 0xffff
+    }
+    #[cfg(not(target_os = "macos"))]
+    fn __trap_cause(&self) -> i32 {
+        ((self.status >> 8) >> 8) as i32
+    }
+    // BSD (syscall/syscall_bsd.go:127-138): a 0x7f low byte is a stop
+    // unless the signal is SIGSTOP, which BSD reports as "continued";
+    // there is no ptrace event, so TrapCause is always -1.
+    #[cfg(target_os = "macos")]
+    fn __stopped(&self) -> bool {
+        (self.status & 0x7f) == 0x7f && ((self.status >> 8) & 0xff) as i32 != crate::syscall::SIGSTOP
+    }
+    #[cfg(target_os = "macos")]
+    fn __continued(&self) -> bool {
+        (self.status & 0x7f) == 0x7f && ((self.status >> 8) & 0xff) as i32 == crate::syscall::SIGSTOP
+    }
+    #[cfg(target_os = "macos")]
+    fn __trap_cause(&self) -> i32 {
+        -1
+    }
+
     // go: sdk 1.25.5 os/exec_posix.go:108-136 ProcessState.String
     /// Go's rendering, which is also what `*exec.ExitError` prints:
     /// "exit status N", "signal: NAME", or "stop signal: NAME", with
@@ -276,7 +348,7 @@ impl ProcessState {
             string::from_static("exit status ") + crate::strconv::Itoa(i64::from(self.ExitCode()))
         } else if self.Signaled() {
             string::from_static("signal: ") + SignalString(self.Signal())
-        } else if (self.status & 0xff) == 0x7f {
+        } else if self.__stopped() {
             // Stopped: the signal is in the byte above, and for a
             // ptrace stop the byte above THAT is the event number.
             // Go appends it, so a traced child says which event
@@ -284,7 +356,7 @@ impl ProcessState {
             let stopsig = (self.status >> 8) & 0xff;
             let mut r = string::from_static("stop signal: ")
                 + SignalString(int::from(i64::from(stopsig)));
-            let cause = (self.status >> 8) >> 8;
+            let cause = self.__trap_cause();
             if stopsig == crate::syscall::SIGTRAP && cause != 0 {
                 r = r
                     + string::from_static(" (trap ")
@@ -292,7 +364,7 @@ impl ProcessState {
                     + string::from_static(")");
             }
             r
-        } else if self.status == 0xffff {
+        } else if self.__continued() {
             string::from_static("continued")
         } else {
             string::from_static("")
@@ -469,7 +541,15 @@ impl Process {
 // serves both accessors here.
 /// A wait4 Timeval as a Duration.
 fn timeval_to_duration(tv: Timeval) -> crate::time::Duration {
-    return crate::time::Duration(tv.Sec * 1_000_000_000 + tv.Usec * 1_000);
+    // Darwin's `timeval` is `{ int64 sec; int32 usec; pad[4] }` (Go:
+    // syscall/ztypes_darwin_arm64.go lines 26-30), and wait4 does not
+    // promise to zero the padding, so only the low half of `Usec` is
+    // the kernel's. Little-endian puts it first in the i64.
+    #[cfg(target_os = "macos")]
+    let usec = i64::from(tv.Usec as i32);
+    #[cfg(not(target_os = "macos"))]
+    let usec = tv.Usec;
+    return crate::time::Duration(tv.Sec * 1_000_000_000 + usec * 1_000);
 }
 
 // go: none — goish-only placement: Go's `FindProcess` is

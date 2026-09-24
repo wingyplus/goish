@@ -168,8 +168,8 @@ pub fn disarm_watch(pd: &PollDesc) {
 /// MSG_PEEK probe run by `poll()` on read events for watched pds.
 /// Returns true if the peer is gone (orderly EOF or fatal error).
 fn watch_probe_disconnected(fd: i32) -> bool {
-    const EINTR: i32 = 4;
-    const EAGAIN: i32 = 11;
+    const EINTR: i32 = crate::syscall::EINTR.0;
+    const EAGAIN: i32 = crate::syscall::EAGAIN.0;
     let mut probe = [0u8; 1];
     loop {
         let n = crate::syscall::Recvfrom(
@@ -496,25 +496,41 @@ pub fn init() {
         if epfd < 0 {
             panic!("netpoll: epoll_create1 failed");
         }
-        let efd = syscall::Eventfd(0, syscall::EFD_CLOEXEC | syscall::EFD_NONBLOCK);
-        if efd < 0 {
-            let _ = syscall::Close(epfd);
-            panic!("netpoll: eventfd2 failed");
-        }
+        #[cfg(target_os = "linux")]
+        let efd = {
+            let efd = syscall::Eventfd(0, syscall::EFD_CLOEXEC | syscall::EFD_NONBLOCK);
+            if efd < 0 {
+                let _ = syscall::Close(epfd);
+                panic!("netpoll: eventfd2 failed");
+            }
 
-        // Register the eventfd with EPOLLIN (level-triggered is fine
-        // — we drain to zero each time, matching Go). data = shard
-        // index; bit 48 clear ⇒ never aliases a slab event.
-        let mut ev = syscall::EpollEvent {
-            events: syscall::EPOLLIN,
-            data: s as u64,
+            // Register the eventfd with EPOLLIN (level-triggered is fine
+            // — we drain to zero each time, matching Go). data = shard
+            // index; bit 48 clear ⇒ never aliases a slab event.
+            let mut ev = syscall::EpollEvent {
+                events: syscall::EPOLLIN,
+                data: s as u64,
+            };
+            let r = syscall::EpollCtl(epfd, syscall::EPOLL_CTL_ADD, efd, &mut ev);
+            if r < 0 {
+                let _ = syscall::Close(efd);
+                let _ = syscall::Close(epfd);
+                panic!("netpoll: epoll_ctl(eventfd) failed");
+            }
+            efd
         };
-        let r = syscall::EpollCtl(epfd, syscall::EPOLL_CTL_ADD, efd, &mut ev);
-        if r < 0 {
-            let _ = syscall::Close(efd);
-            let _ = syscall::Close(epfd);
-            panic!("netpoll: epoll_ctl(eventfd) failed");
-        }
+        // Darwin: the break is an `EVFILT_USER` event on the shard's
+        // own kqueue (Go: `netpoll_kqueue_event.go`), so there is no
+        // separate fd — `efd` names the kqueue, which is what a break
+        // triggers. Same data = shard index, bit 48 clear.
+        #[cfg(target_os = "macos")]
+        let efd = {
+            if syscall::NetpollWakeAdd(epfd, s as u64) < 0 {
+                let _ = syscall::Close(epfd);
+                panic!("netpoll: kevent(EVFILT_USER) failed");
+            }
+            epfd
+        };
 
         SHARDS[s].efd.store(efd, Ordering::Release);
         SHARDS[s].epfd.store(epfd, Ordering::Release);
@@ -808,13 +824,23 @@ pub fn poll_shard(shard: usize, delay_ms: i32) -> Vec<NonNull<G>> {
             // sweeps leave it set so the break stays sticky for the
             // shard's blocking poller (level-triggered).
             if delay_ms != 0 {
-                let mut one: u64 = 0;
-                let _ = syscall::Read(
-                    SHARDS[shard].efd.load(Ordering::Acquire),
-                    &mut one as *mut u64 as *mut u8,
-                    8,
-                );
+                #[cfg(target_os = "linux")]
+                {
+                    let mut one: u64 = 0;
+                    let _ = syscall::Read(
+                        SHARDS[shard].efd.load(Ordering::Acquire),
+                        &mut one as *mut u64 as *mut u8,
+                        8,
+                    );
+                }
                 SHARDS[shard].wake_sig.store(0, Ordering::Release);
+            } else {
+                // Darwin's break is edge-triggered (`EV_CLEAR`), so a
+                // non-blocking sweep that sees it has consumed it.
+                // Relay it to the blocking poller — Go's
+                // `processWakeupEvent` for the same reason.
+                #[cfg(target_os = "macos")]
+                let _ = syscall::NetpollWakeTrigger(epfd);
             }
             continue;
         }
@@ -911,15 +937,22 @@ pub fn break_shard(shard: usize) {
         sh.wake_sig.store(0, Ordering::Release);
         return;
     }
-    let one: u64 = 1;
-    let n = syscall::Write(efd, &one as *const u64 as *const u8, 8);
+    #[cfg(target_os = "linux")]
+    let n = {
+        let one: u64 = 1;
+        syscall::Write(efd, &one as *const u64 as *const u8, 8)
+    };
+    #[cfg(target_os = "macos")]
+    let n = match syscall::NetpollWakeTrigger(efd) {
+        0 => 8,
+        e => e as isize,
+    };
     if n != 8 {
-        // EAGAIN (11) on a full counter is fine — something else
-        // already wrote to it and netpoll will pick it up. EINTR (4)
-        // is also benign. Anything else is unrecoverable.
-        const EINTR: isize = 4;
-        const EAGAIN: isize = 11;
-        if n != -EAGAIN && n != -EINTR {
+        // EAGAIN on a full counter is fine — something else already
+        // wrote to it and netpoll will pick it up. EINTR is also
+        // benign. Anything else is unrecoverable.
+        let e = (-n) as i32;
+        if e != syscall::EAGAIN.0 && e != syscall::EINTR.0 {
             panic!("netpoll: eventfd write failed");
         }
     }

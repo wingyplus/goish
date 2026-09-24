@@ -1358,7 +1358,7 @@ pub fn Now() -> Time {
     let mut wall = Timespec::default();
     let mut mono = Timespec::default();
     let _ = syscall::ClockGettime(syscall::CLOCK_REALTIME, &mut wall);
-    let _ = syscall::ClockGettime(syscall::CLOCK_MONOTONIC, &mut mono);
+    let _ = syscall::ClockGettime(crate::runtime::sysmon::NANOTIME_CLOCK, &mut mono);
     let mono_ns = mono
         .tv_sec
         .wrapping_mul(1_000_000_000)

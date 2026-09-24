@@ -12,9 +12,19 @@
 // Values "0", "false", "off" disable the flag; anything else (or
 // unset) leaves it enabled.
 //
-// Wiring: __goish_rt0 calls init_from_argv before any goroutine code,
-// computing envp from argv per the SysV ELF stack layout
-// (envp = argv + argc + 1).
+// Wiring: __goish_rt0 calls one of the two entry points below before
+// any goroutine code runs. Which one is an OS fact, not a preference:
+//
+//   * Linux hands the process a raw stack and `envp` sits just past
+//     argv's NULL terminator, so `init_from_argv` recovers it as
+//     `argv + argc + 1` per the SysV ELF layout.
+//   * Darwin hands `envp` to `main` as its third argument. The pointer
+//     walk above is not merely unnecessary there, it is invalid — dyld
+//     has already built a C stack frame and nothing says the vectors
+//     are adjacent. `init_from_envp` takes the pointer directly.
+//
+// Both converge on the same scan, so a flag behaves identically on
+// every target.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -33,7 +43,18 @@ pub unsafe fn init_from_argv(argc: i32, argv: *const *const u8) {
     if argv.is_null() {
         return;
     }
-    let envp_start = argv.add(argc as usize + 1);
+    init_from_envp(argv.add(argc as usize + 1));
+}
+
+/// Parse env vars from an explicit `envp` vector and update flags.
+///
+/// Safety: `envp` must point at a NULL-terminated vector of
+/// NUL-terminated C strings — `main`'s third argument on Darwin, or
+/// `argv + argc + 1` on Linux.
+pub unsafe fn init_from_envp(envp_start: *const *const u8) {
+    if envp_start.is_null() {
+        return;
+    }
     let mut i: usize = 0;
     loop {
         let entry = *envp_start.add(i);

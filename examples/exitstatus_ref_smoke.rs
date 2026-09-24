@@ -31,6 +31,20 @@ extern crate goish;
 use goish::os::exec;
 use goish::{fmt, slice, string};
 
+/// The sigsegv row is the one that depends on the platform, because
+/// the core bit in the wait status is the KERNEL's report of whether it
+/// wrote a core file, not something the program chooses. On the Linux
+/// reference host it did. On macOS the default core limit is 0
+/// (`ulimit -c`), so the kernel writes nothing and clears the bit: Go
+/// 1.26.4 darwin/arm64 prints "signal: segmentation fault" with status
+/// 0xb for this exact command, measured. goish decodes the same bit
+/// (0x80) on both, so here the row checks the other half of (3): no
+/// " (core dumped)" when the kernel wrote no core.
+#[cfg(not(target_os = "macos"))]
+const SIGSEGV_GO: &str = "sigsegv        exitErr=true  code=-1   exited=false success=false signaled=true  err=\"signal: segmentation fault (core dumped)\"";
+#[cfg(target_os = "macos")]
+const SIGSEGV_GO: &str = "sigsegv        exitErr=true  code=-1   exited=false success=false signaled=true  err=\"signal: segmentation fault\"";
+
 /// Go's output, verbatim.
 const GO: [&str; 8] = [
     "true           exitErr=false code=-2   exited=false success=false signaled=false err=\"<nil>\"",
@@ -39,7 +53,7 @@ const GO: [&str; 8] = [
     "exit-255       exitErr=true  code=255  exited=true  success=false signaled=false err=\"exit status 255\"",
     "sigkill        exitErr=true  code=-1   exited=false success=false signaled=true  err=\"signal: killed\"",
     "sigterm        exitErr=true  code=-1   exited=false success=false signaled=true  err=\"signal: terminated\"",
-    "sigsegv        exitErr=true  code=-1   exited=false success=false signaled=true  err=\"signal: segmentation fault (core dumped)\"",
+    SIGSEGV_GO,
     "notfound       exitErr=false code=-2   exited=false success=false signaled=false err=\"fork/exec /nonexistent/binary: no such file or directory\"",
 ];
 

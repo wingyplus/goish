@@ -115,6 +115,7 @@ pub mod sort;
 pub mod strconv;
 pub mod strings;
 pub mod sync;
+pub mod sys;
 pub mod syscall;
 pub mod term;
 pub mod testing;
@@ -364,6 +365,7 @@ pub fn init() {
 // order is "imported-packages-first" because the linker walks the
 // dependency graph when building. Within a single crate, declaration
 // order is preserved.
+#[cfg(not(target_os = "macos"))]
 extern "C" {
     static __init_array_start: extern "C" fn();
     static __init_array_end: extern "C" fn();
@@ -389,6 +391,37 @@ pub mod __select_spin {
     pub use crate::runtime::spin::{raw_lock, raw_unlock};
 }
 
+/// Darwin: run every `goish::import!` dispatcher, in link order.
+///
+/// Mach-O has no `.init_array` convention to borrow and ld64 defines
+/// no `__init_array_*` bounds, so the macro places its pointers in a
+/// private `__DATA,__goish_init` section instead and this walks it
+/// between ld64's `section$start`/`section$end` symbols (M10).
+///
+/// **`__DATA,__mod_init_func` is the wrong answer and is worth naming
+/// so it is not reached for.** dyld runs those before `main` — before
+/// `goish::init()` and before the allocator is online — so a port
+/// `init()` that allocates would fault before goish had booted.
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub fn __run_pkg_inits() {
+    extern "C" {
+        #[link_name = "\x01section$start$__DATA$__goish_init"]
+        static __goish_init_start: extern "C" fn();
+        #[link_name = "\x01section$end$__DATA$__goish_init"]
+        static __goish_init_end: extern "C" fn();
+    }
+    unsafe {
+        let mut p = &__goish_init_start as *const extern "C" fn();
+        let end = &__goish_init_end as *const extern "C" fn();
+        while p < end {
+            (*p)();
+            p = p.add(1);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 #[doc(hidden)]
 pub fn __run_pkg_inits() {
     // SAFETY: `__init_array_*` symbols come from the linker; the

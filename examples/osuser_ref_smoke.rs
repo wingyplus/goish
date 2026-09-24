@@ -83,6 +83,7 @@ fn is_unknown_groupid(e: &error) -> bool {
 //     them. Comparing whole rendered lines keeps this smoke and the
 //     generator in lockstep: a case added to one is a mismatch in the
 //     other, never a silent pass.
+#[cfg(not(target_os = "macos"))]
 const GO: [&str; 20] = [
     "current uid-nonempty=true gid-nonempty=true name-nonempty=true home-nonempty=true",
     "lookup root uid=\"0\" gid=\"0\" username=\"root\" home=\"/root\"",
@@ -103,6 +104,34 @@ const GO: [&str; 20] = [
     "lookupgroupid \"\"         -> err=\"group: unknown groupid \" unknown=true",
     "lookupgroupid \"999999\"   -> err=\"group: unknown groupid 999999\" unknown=true",
     "lookupgroupid \"abc\"      -> err=\"group: unknown groupid abc\" unknown=true",
+    "groupids nonempty=true all-numeric=true has-primary=true",
+];
+// darwin/arm64: generated the same way, on darwin/arm64, where Go's
+// default build looks users up through libc (os/user/cgo_lookup_unix.go)
+// and so does goish's. Directory Services matches names without regard
+// to case ("ROOT" resolves), root's home is /var/root, and a non-numeric
+// id is reported as the strconv.Atoi error rather than "invalid userid".
+#[cfg(target_os = "macos")]
+const GO: [&str; 20] = [
+    "current uid-nonempty=true gid-nonempty=true name-nonempty=true home-nonempty=true",
+    "lookup root uid=\"0\" gid=\"0\" username=\"root\" home=\"/var/root\"",
+    "lookupid 0 username=\"root\" uid=\"0\"",
+    "lookup \"\"                             -> err=\"user: unknown user \" unknown=true",
+    "lookup \"definitely-no-such-user-xyzzy\" -> err=\"user: unknown user definitely-no-such-user-xyzzy\" unknown=true",
+    "lookup \"root \"                        -> err=\"user: unknown user root \" unknown=true",
+    "lookup \"ROOT\"                         -> ok",
+    "lookupid \"\"         -> err=\"strconv.Atoi: parsing \\\"\\\": invalid syntax\" unknown=false",
+    "lookupid \"999999\"   -> err=\"user: unknown userid 999999\" unknown=true",
+    "lookupid \"-1\"       -> err=\"user: unknown userid -1\" unknown=true",
+    "lookupid \"abc\"      -> err=\"strconv.Atoi: parsing \\\"abc\\\": invalid syntax\" unknown=false",
+    "lookupid \"0x0\"      -> err=\"strconv.Atoi: parsing \\\"0x0\\\": invalid syntax\" unknown=false",
+    "lookupid \"00\"       -> ok",
+    "group 0 gid=\"0\" name-nonempty=true",
+    "lookupgroup \"\"                               -> err=\"group: unknown group \" unknown=true",
+    "lookupgroup \"definitely-no-such-group-xyzzy\" -> err=\"group: unknown group definitely-no-such-group-xyzzy\" unknown=true",
+    "lookupgroupid \"\"         -> err=\"strconv.Atoi: parsing \\\"\\\": invalid syntax\" unknown=false",
+    "lookupgroupid \"999999\"   -> err=\"group: unknown groupid 999999\" unknown=true",
+    "lookupgroupid \"abc\"      -> err=\"strconv.Atoi: parsing \\\"abc\\\": invalid syntax\" unknown=false",
     "groupids nonempty=true all-numeric=true has-primary=true",
 ];
 

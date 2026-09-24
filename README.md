@@ -89,7 +89,9 @@ per-P, and an HTTP server with an allocation-free hot path.
 
 ### Not for you (yet)
 
-- **Linux `x86_64` only.** Other targets are out of scope for now.
+- **Linux `x86_64` is the only complete target.** `linux/aarch64` and `darwin/arm64` boot but
+  have no scheduler yet — see [Targets](#targets). Everything below describes x86_64 Linux
+  unless it says otherwise.
 - **Not security-audited.** The TLS stack is a machine-checked port, but it has had no
   external review and no side-channel analysis. See [SECURITY.md](SECURITY.md).
 - **Not all of Go.** `crypto/` and `net/http` are complete. The rest of `net`, `encoding`
@@ -110,7 +112,16 @@ per-P, and an HTTP server with an allocation-free hot path.
 
 Active development. The e2e suite runs 856 declared examples at tiered loop counts (`make e2e`): deterministic examples once, memory-subsystem examples ×10, and the race-sensitive scheduler/chan/select/sync/timer/server families ×50. `spawn_million` still parks 1M goroutines.
 
-Goish is single-target: `x86_64-unknown-linux-gnu`.
+### Targets
+
+| Target | State | Gate |
+|---|---|---|
+| `x86_64-unknown-linux-gnu` | **Complete.** Everything in this README. | `make e2e` — 417 declared examples at tiered loop counts |
+| `aarch64-unknown-linux-gnu` | **Boots.** Entry stub, args, flags, thread pointer, mheap, mcentral, the P array. No scheduler: `gogo` is unwritten, so `main` runs on `g0` and anything that parks a goroutine fatals. | `make run-arm64` — 1 example |
+| `aarch64-apple-darwin` | **Runs the suite.** Worker Ms and sysmon on pthreads, the kqueue netpoller, signals, async preemption, package init, `file:line` symbolization from the dSYM, `os/exec`. A few examples that exercise Linux-only kernel interfaces (inotify, fanotify, amd64 signal frames) print SKIP. | `make e2e TARGET=aarch64-apple-darwin` — every declared example, native |
+
+linux/arm64 is an allowlist-driven ratchet (`scripts/linux_arm64_examples.txt`): a milestone
+is not done until its examples are in the list and green. The port plan is [`plan.md`](plan.md).
 
 ### Testing
 
@@ -344,9 +355,23 @@ cargo build --target x86_64-unknown-linux-gnu --example sched_park
 
 Binaries are statically linked, no `glibc`, no `ld.so` - `cat /proc/<pid>/maps` shows only the binary itself plus `mmap`'d arenas.
 
+That holds on **both Linux targets**, arm64 included. It cannot hold on `aarch64-apple-darwin`
+and the reason is the platform, not the port: Mach-O executables enter through `LC_MAIN` after
+dyld has initialised libSystem, Apple ships no static libSystem, and PIE is mandatory on arm64
+macOS. libSystem *is* the system-call interface there — which is also what Go does
+(`runtime/sys_darwin_arm64.s`, the `libcCall` trampolines). So a Darwin build reports one
+dependency, `/usr/lib/libSystem.B.dylib`, and no others.
+
+```bash
+make e2e TARGET=aarch64-apple-darwin                       # macOS arm64, native
+make run-arm64                                             # linux/arm64, via docker
+```
+
 ### Toolchain
 - Rust 1.79+ (uses inline-const `[const { Span::new() }; N]` and naked asm).
-- Linux x86_64 host. Tests run under the host's kernel.
+- Linux x86_64 host for the full suite. Tests run under the host's kernel.
+- On Apple Silicon, `make e2e TARGET=aarch64-apple-darwin` is native execution and
+  `make run-arm64` needs docker.
 
 ### Notable build flags (in `.cargo/config.toml`)
 ```

@@ -17,19 +17,25 @@ use goish::syscall;
 fn main() {
     let mut failed = 0;
 
-    // 1. GOOS == "linux" — goish v1 is Linux-only.
+    // 1. GOOS names the OS this binary was built for. Derived from
+    // cfg! rather than pinned to a literal: goish now builds for
+    // linux and darwin, and an assertion that only holds on one of
+    // them tests the test rather than the runtime.
+    let want_goos = if cfg!(target_os = "macos") { "darwin" } else { "linux" };
     {
-        if runtime::GOOS == "linux" {
-            fmt::Println!("[ 1] GOOS == \"linux\"          PASS");
+        if runtime::GOOS == want_goos {
+            fmt::Println!("[ 1] GOOS matches the target   PASS");
         } else {
-            fmt::Println!("[ 1] GOOS == \"linux\"          FAIL got=", runtime::GOOS);
+            fmt::Println!("[ 1] GOOS matches the target   FAIL got=", runtime::GOOS);
             failed += 1;
         }
     }
 
-    // 2. GOARCH == "amd64" — goish v1 is x86_64-only.
+    // 2. GOARCH names the CPU this binary was built for. Go's
+    // spelling, not Rust's — "arm64", not "aarch64".
+    let want_goarch = if cfg!(target_arch = "aarch64") { "arm64" } else { "amd64" };
     {
-        if runtime::GOARCH == "amd64" {
+        if runtime::GOARCH == want_goarch {
             fmt::Println!("[ 2] GOARCH == \"amd64\"        PASS");
         } else {
             fmt::Println!("[ 2] GOARCH == \"amd64\"        FAIL got=", runtime::GOARCH);
@@ -61,7 +67,7 @@ fn main() {
     // 5. Constants flow into goish::string via string() conversion.
     {
         let goos_str: string = string(runtime::GOOS);
-        if goos_str == string("linux") {
+        if goos_str == string(want_goos) {
             fmt::Println!("[ 5] GOOS via string()         PASS");
         } else {
             fmt::Println!("[ 5] GOOS via string()         FAIL");

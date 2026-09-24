@@ -37,6 +37,7 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, AtomicUsize, Ordering,
 };
 
+use super::tls;
 use super::g::G;
 use super::p::P;
 use crate::runtime::note::Note;
@@ -181,6 +182,13 @@ pub struct MStorage {
     /// read.
     #[cfg(debug_assertions)]
     pub first_lock_site: AtomicPtr<core::panic::Location<'static>>,
+    /// This M's `pthread_t` — the handle Darwin signals a thread
+    /// through (`pthread_kill`, Go's `signalM` in `runtime/os_darwin.go`),
+    /// where Linux uses the tid in `M::procid`. M6's crash path and M8's
+    /// preemption both need it. Last field, so `tls_self` stays at
+    /// offset 0.
+    #[cfg(target_os = "macos")]
+    pub pthread: AtomicUsize,
 }
 
 // MStorage holds a raw pointer in UnsafeCell. We assert thread-
@@ -205,6 +213,8 @@ impl MStorage {
             g0: AtomicPtr::new(core::ptr::null_mut()),
             #[cfg(debug_assertions)]
             first_lock_site: AtomicPtr::new(core::ptr::null_mut()),
+            #[cfg(target_os = "macos")]
+            pthread: AtomicUsize::new(0),
         }
     }
 
@@ -322,25 +332,13 @@ pub fn is_tls_ready() -> bool {
 /// address is never held in a register across a preemptible instruction —
 /// the RMW always hits the M we are executing on *at that instant*.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub fn acquirem() {
     if !is_tls_ready() {
         return;
     }
-    unsafe {
-        #[cfg(not(feature = "ffi-system-tls"))]
-        core::arch::asm!(
-            "lock add dword ptr fs:[{off}], 1",
-            off = const core::mem::offset_of!(MStorage, locks),
-            options(nostack),
-        );
-        #[cfg(feature = "ffi-system-tls")]
-        core::arch::asm!(
-            "lock add dword ptr gs:[{off}], 1",
-            off = const core::mem::offset_of!(MStorage, locks),
-            options(nostack),
-        );
-    }
+    unsafe { tls::locks_inc::<{ core::mem::offset_of!(MStorage, locks) }>() }
 }
 
 /// Decrement the calling M's non-yielding-section depth counter.
@@ -351,30 +349,14 @@ pub fn acquirem() {
 /// reason as `acquirem` (see there); `xadd` rather than `sub` so
 /// the previous value feeds the underflow tripwire.
 #[inline(never)]
-#[link_section = "goish_rt_text"]
+#[cfg_attr(not(target_os = "macos"), link_section = "goish_rt_text")]
+#[cfg_attr(target_os = "macos", link_section = "__TEXT,__goish_rt_text,regular,pure_instructions")]
 pub fn releasem() {
     if !is_tls_ready() {
         return;
     }
-    let prev: u32;
-    unsafe {
-        #[cfg(not(feature = "ffi-system-tls"))]
-        core::arch::asm!(
-            "mov {p:e}, -1",
-            "lock xadd dword ptr fs:[{off}], {p:e}",
-            p = out(reg) prev,
-            off = const core::mem::offset_of!(MStorage, locks),
-            options(nostack),
-        );
-        #[cfg(feature = "ffi-system-tls")]
-        core::arch::asm!(
-            "mov {p:e}, -1",
-            "lock xadd dword ptr gs:[{off}], {p:e}",
-            p = out(reg) prev,
-            off = const core::mem::offset_of!(MStorage, locks),
-            options(nostack),
-        );
-    }
+    let prev: u32 =
+        unsafe { tls::locks_dec::<{ core::mem::offset_of!(MStorage, locks) }>() };
     // Underflow tripwire. `locks` is per-M state: a bump/drop pair
     // that straddles a park (gopark can resume on a different M)
     // leaves the parking M at +1 forever and wraps the resuming M's
@@ -396,8 +378,7 @@ pub fn releasem() {
         unsafe {
             let msg = b"releasem UNDERFLOW, caller PCs:\n";
             crate::syscall::Write(crate::syscall::STDERR, msg.as_ptr(), msg.len());
-            let mut rbp: u64;
-            core::arch::asm!("mov {}, rbp", out(reg) rbp, options(nomem, nostack));
+            let mut rbp: u64 = tls::frame_pointer();
             let mut hops = 0;
             while hops < 10 && rbp != 0 && rbp & 7 == 0 {
                 let next = *(rbp as *const u64);
@@ -541,28 +522,25 @@ pub fn install_signal_stack() {
 /// After this call, every subsequent `current_m()` on the main
 /// thread reads `&MAIN_M.m` via a segment-relative load.
 pub fn setup_main_tls() {
+    // Darwin: allocate the TSD key the thread pointer lives in. Linux
+    // has a register to plant and nothing to allocate.
+    #[cfg(target_os = "macos")]
+    unsafe { tls::init() };
     // Preserve the platform FS base. In default builds Goish replaces
     // FS with its M slot. In `ffi-system-tls` builds FS is never
     // changed, so dynamically loaded foreign code keeps access to its
     // system TLS while Goish uses GS.
     // Zero in static builds (no ld.so, nothing to preserve).
     // NB: ARCH_GET_FS *writes* the base to the given address.
-    let mut saved_base: usize = 0;
-    let r = syscall::ArchPrctl(syscall::ARCH_GET_FS, &mut saved_base as *mut usize as usize);
-    if r == 0 && saved_base != 0 {
+    let saved_base: usize = unsafe { tls::base() };
+    if saved_base != 0 {
         PRE_GOISH_FS_BASE.store(saved_base, Ordering::Release);
     }
     MAIN_M.init_tls_self();
     let tls_base = MAIN_M.tls_base();
-    #[cfg(not(feature = "ffi-system-tls"))]
-    let r = syscall::ArchPrctl(syscall::ARCH_SET_FS, tls_base);
-    #[cfg(feature = "ffi-system-tls")]
-    let r = syscall::ArchPrctl(syscall::ARCH_SET_GS, tls_base);
+    let r = unsafe { tls::set_base(tls_base) };
     if r != 0 {
-        #[cfg(not(feature = "ffi-system-tls"))]
-        const MSG: &[u8] = b"goish: arch_prctl(ARCH_SET_FS) failed\n";
-        #[cfg(feature = "ffi-system-tls")]
-        const MSG: &[u8] = b"goish: arch_prctl(ARCH_SET_GS) failed\n";
+        const MSG: &[u8] = b"goish: planting the thread pointer failed\n";
         syscall::Write(syscall::STDERR, MSG.as_ptr(), MSG.len());
         syscall::Exit(2);
     }
@@ -577,6 +555,8 @@ pub fn setup_main_tls() {
     // no equivalent entry, so we do it here.
     let tid = syscall::Gettid();
     MAIN_M.m.lock().procid.store(tid, Ordering::Release);
+    #[cfg(target_os = "macos")]
+    MAIN_M.pthread.store(unsafe { crate::sys::sys_pthread_self() }, Ordering::Release);
     // M18b-δ.3: register the main thread's per-thread alt signal
     // stack BEFORE `preempt::install` arms the SIGURG handler with
     // `SA_ONSTACK`. Without this, the very first SIGURG delivered to
@@ -607,28 +587,8 @@ pub fn setup_main_tls() {
 /// fallback is sized for default Linux `RLIMIT_STACK = 8 MiB`.
 pub fn setup_main_g0() {
     use crate::runtime::sched::g::G;
-    use crate::runtime::sched::stack::parse_main_stack_bounds;
 
-    let mut buf = [0u8; 16 * 1024];
-    let (base, mut size) = match parse_main_stack_bounds(&mut buf) {
-        Some(pair) => pair,
-        None => {
-            // Heuristic fallback: 8 MiB stack with current rsp inside.
-            let rsp: usize;
-            unsafe {
-                core::arch::asm!(
-                    "mov {}, rsp",
-                    out(reg) rsp,
-                    options(nomem, nostack, preserves_flags),
-                );
-            }
-            const FALLBACK_STACK: usize = 8 * 1024 * 1024;
-            // Round rsp up to nearest FALLBACK_STACK boundary as approximate top.
-            let top = (rsp + FALLBACK_STACK - 1) & !(FALLBACK_STACK - 1);
-            let base = top - FALLBACK_STACK;
-            (base as *mut u8, FALLBACK_STACK)
-        }
-    };
+    let (base, mut size) = main_stack_bounds();
 
     // The kernel writes argv/envp/auxv — pointer arrays AND their
     // strings — into the TOP of the main thread's [stack] mapping; the
@@ -655,6 +615,65 @@ pub fn setup_main_g0() {
     MAIN_M.g0.store(g0_ptr, Ordering::Release);
 }
 
+/// `(base, size)` of the main thread's OS stack, read from
+/// `/proc/self/maps`.
+#[cfg(target_os = "linux")]
+fn main_stack_bounds() -> (*mut u8, usize) {
+    use crate::runtime::sched::stack::parse_main_stack_bounds;
+
+    let mut buf = [0u8; 16 * 1024];
+    match parse_main_stack_bounds(&mut buf) {
+        Some(pair) => pair,
+        None => {
+            // Heuristic fallback: 8 MiB stack with current rsp inside.
+            let rsp: usize = unsafe { tls::stack_pointer() };
+            const FALLBACK_STACK: usize = 8 * 1024 * 1024;
+            // Round rsp up to nearest FALLBACK_STACK boundary as approximate top.
+            let top = (rsp + FALLBACK_STACK - 1) & !(FALLBACK_STACK - 1);
+            let base = top - FALLBACK_STACK;
+            (base as *mut u8, FALLBACK_STACK)
+        }
+    }
+}
+
+/// `(base, size)` of the main thread's OS stack, from libpthread.
+///
+/// There is no `/proc` to parse; `pthread_get_stackaddr_np` returns the
+/// stack's *top* and `pthread_get_stacksize_np` its size, so the base is
+/// the difference. Checked rather than trusted — the main thread's
+/// reported size has been wrong on some macOS releases — by requiring
+/// the current `sp` to fall inside the range.
+///
+/// **The region handed back ends at the current `sp`, not at the top.**
+/// On Linux only the kernel's argv/envp block sits above the entry
+/// rsp, which is what the argv cap in `setup_main_g0` protects. On
+/// macOS there is more above it, and it is live for the whole process:
+/// dyld runs `main` from its own `start` frame on this stack, and dyld4
+/// keeps its runtime state in that frame — among it `RuntimeLocks`,
+/// whose locks `fork()`'s `libSystem_atfork_prepare` and `dladdr` take.
+/// Adopting everything up to argv made the main M's first `mcall`
+/// start g0 frames at the argv cap and shred those objects downward:
+/// `fork()` then faulted on a code address where dyld's lock pointer
+/// had been (`takeDlopenLockBeforeFork`), or aborted with
+/// "os_unfair_lock is corrupt" (`takeLockBeforeFork`), a run-dependent
+/// time into the process. Go takes the same bound: `rt0_go` makes g0's
+/// stack out of the OS stack *below the entry RSP*
+/// (`runtime/asm_arm64.s:133-141`, `stack_hi = RSP`). Everything at or
+/// above this function's `sp` is a live caller frame (`__goish_rt0`,
+/// dyld's `start`) or the argv block, so none of it is g0's to reuse.
+#[cfg(target_os = "macos")]
+fn main_stack_bounds() -> (*mut u8, usize) {
+    let (top, size) = unsafe { crate::sys::sys_pthread_stack(crate::sys::sys_pthread_self()) };
+    let sp = unsafe { tls::stack_pointer() };
+    if size == 0 || top < size || sp >= top || sp < top - size {
+        const MSG: &[u8] = b"goish: setup_main_g0: libpthread's main-thread stack bounds do not contain sp\n";
+        syscall::Write(syscall::STDERR, MSG.as_ptr(), MSG.len());
+        syscall::Exit(2);
+    }
+    let base = top - size;
+    (base as *mut u8, (sp & !0xf) - base)
+}
+
 /// Pointer to the currently-running M's `SpinLock<M>`, read from the
 /// thread's Goish TLS segment. Each thread's base was planted at init,
 /// so this is a single instruction on the hot path.
@@ -663,22 +682,7 @@ pub fn setup_main_g0() {
 /// uninitialized at process entry; reading it would yield garbage.
 #[inline]
 pub fn current_m() -> &'static SpinLock<M> {
-    let ptr: *const SpinLock<M>;
-    unsafe {
-        #[cfg(not(feature = "ffi-system-tls"))]
-        core::arch::asm!(
-            "mov %fs:0, {0}",
-            out(reg) ptr,
-            options(nostack, preserves_flags, att_syntax),
-        );
-        #[cfg(feature = "ffi-system-tls")]
-        core::arch::asm!(
-            "mov %gs:0, {0}",
-            out(reg) ptr,
-            options(nostack, preserves_flags, att_syntax),
-        );
-        &*ptr
-    }
+    unsafe { &*(tls::slot0() as *const SpinLock<M>) }
 }
 
 /// Pointer to the calling thread's `MStorage`. Recovers the storage

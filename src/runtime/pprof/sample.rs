@@ -28,7 +28,6 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use crate::runtime::preempt::{UcontextT, REG_RBP, REG_RIP};
 use crate::runtime::segv::MAX_FRAMES;
 
 /// How many samples the ring holds before it starts dropping. At the
@@ -76,7 +75,7 @@ static PERIOD_NS: AtomicU64 = AtomicU64::new(0);
 /// The SIGPROF handler. Async-signal-safe by construction: it reads two
 /// registers out of the ucontext, walks a bounded frame chain, and
 /// writes into preallocated storage.
-extern "C" fn goish_prof_sigtramp(_sig: i32, _info: *const u8, ctx: *mut UcontextT) {
+extern "C" fn goish_prof_sigtramp(_sig: i32, _info: *const u8, ctx: *mut u8) {
     if !ACTIVE.load(Ordering::Relaxed) {
         return;
     }
@@ -84,8 +83,8 @@ extern "C" fn goish_prof_sigtramp(_sig: i32, _info: *const u8, ctx: *mut Ucontex
         return;
     }
     // The INTERRUPTED frame, not the handler's own.
-    let rip = crate::convert::uint64(unsafe { (*ctx).uc_mcontext.gregs[REG_RIP] });
-    let rbp = crate::convert::uint64(unsafe { (*ctx).uc_mcontext.gregs[REG_RBP] });
+    let rip = crate::convert::uint64(unsafe { crate::runtime::sigctx::pc(ctx) });
+    let rbp = crate::convert::uint64(unsafe { crate::runtime::sigctx::fp(ctx) });
 
     let (lo, hi) = match stack_bounds() {
         Some(b) => b,
@@ -153,7 +152,7 @@ pub(crate) fn start(hz: i64) -> bool {
         sa_flags: crate::syscall::SA_SIGINFO
             | crate::syscall::SA_RESTORER
             | crate::syscall::SA_ONSTACK,
-        sa_restorer: crate::syscall::SigreturnTrampoline as *const () as usize,
+        sa_restorer: crate::syscall::sigreturn_restorer(),
         sa_mask: 0,
     };
     let r = unsafe {

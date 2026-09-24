@@ -21,3 +21,99 @@ rustflags = [
     # reserving RBP. Required by `runtime::segv::walk_frames`.
     "-C", "force-frame-pointers=yes",
 ]
+
+# Linux/aarch64 — same bare-metal contract as x86_64. Every flag above
+# applies verbatim: arm64 Linux has no crt0 we want, no libc we link,
+# and the static/no-dynamic-linker combination is what makes `ldd`
+# report "not a dynamic executable". Frame pointers are likewise
+# required — AAPCS64's frame record is [x29]/[x29+8], the same shape
+# the SIGSEGV walker already relies on for [rbp]/[rbp+8].
+#
+# This target is NOT the `[build]` default; pass `--target
+# aarch64-unknown-linux-gnu` explicitly. On a macOS host you must also
+# point cargo at a cross linker — see scripts/cross_lld.py.
+[target.aarch64-unknown-linux-gnu]
+rustflags = [
+    # aarch64-only, and load-bearing for a libc-free build. LLVM's
+    # default "outline atomics" route every atomic RMW through
+    # `__aarch64_ldadd*` helpers in compiler_builtins, which pick an LSE
+    # or an LL/SC implementation at runtime by asking glibc's
+    # `getauxval(AT_HWCAP)`. With `-nodefaultlibs` there is no glibc, so
+    # the link fails on an undefined `getauxval`. Turning the feature off
+    # makes LLVM emit the baseline armv8-a `ldxr`/`stxr` sequences
+    # inline, with no runtime dispatch and no libc dependency.
+    #
+    # `+lse` would also link, by emitting LSE instructions
+    # unconditionally — but that silently raises the binary's floor to
+    # armv8.1 and is an M11 (CPU feature detection) decision, not a build
+    # flag to slip in here.
+    #
+    # rustc warns that `outline-atomics` is "not stably supported"; that
+    # is expected and there is no stable spelling of "do not call libc
+    # from compiler_builtins". Revisit if the warning becomes an error.
+    "-C", "target-feature=-outline-atomics",
+    "-C", "link-arg=-nostartfiles",
+    "-C", "link-arg=-nodefaultlibs",
+    "-C", "link-arg=-static",
+    "-C", "link-arg=-Wl,--no-dynamic-linker",
+    "-C", "relocation-model=static",
+    "-C", "force-frame-pointers=yes",
+]
+
+# aarch64-apple-darwin — the one target where goish is NOT bare-metal.
+#
+# Every flag the Linux blocks carry is dropped, and each for a reason
+# that is a property of the platform rather than a preference:
+#
+#   * `-nostartfiles` — there is no crt0 to suppress. Mach-O executables
+#     enter through `LC_MAIN`, which dyld resolves to `_main` after it
+#     has already initialised libSystem.
+#   * `-nodefaultlibs` — libSystem is the system-call interface on
+#     Darwin, not an optional convenience. Go links it too, and calls
+#     through it rather than issuing `svc`
+#     (`runtime/sys_darwin_arm64.s:490-566`, the `libcCall` trampolines).
+#   * `-static` — Apple ships no static libSystem and does not support
+#     statically linked userland binaries.
+#   * `--no-dynamic-linker` — ld64 rejects the flag outright.
+#   * `relocation-model=static` — PIE is mandatory on arm64 macOS.
+#
+# So the README's "no glibc, no ld.so, statically linked" claim is a
+# Linux claim. It survives on both Linux targets, including arm64, and
+# it cannot survive here. That concession is what buys native execution
+# on the development machine.
+#
+# `force-frame-pointers` is the one flag that carries over, and on this
+# target it is close to free: AAPCS64 and Apple's own ABI already
+# mandate a frame record at `[x29]`/`[x29+8]`, which is the same shape
+# the SIGSEGV walker reads for `[rbp]`/`[rbp+8]`.
+#
+# This target is NOT the `[build]` default — that stays pinned to
+# x86_64-unknown-linux-gnu so the bare-metal rustflags above cannot leak
+# into `goish-macros`. Since the host tuple IS aarch64-apple-darwin,
+# this block does leak into proc-macro builds; `force-frame-pointers` is
+# harmless to a proc macro. Darwin builds pass `--target` explicitly
+# (or set CARGO_BUILD_TARGET=aarch64-apple-darwin in the environment).
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-C", "force-frame-pointers=yes",
+    # `runtime::symbolize` needs DWARF for `file:line`, and on Mach-O the
+    # linked executable never contains any: ld64 leaves only an N_OSO
+    # debug map pointing at the object files, and those are gone by run
+    # time (rustc deletes a binary crate's own `.o`s after linking; CI
+    # sets CARGO_INCREMENTAL=0, so no incremental cache holds them
+    # either). `packed` makes cargo run dsymutil and uplift
+    # `examples/<name>.dSYM`, which `symbolize/macho.rs` reads.
+    #
+    # `line-tables-only` because line tables are all the symboliser
+    # reads: each dSYM carries ~8 MB of DWARF instead of ~25 MB with
+    # full debuginfo (measured on `hello`), one per example binary. The cost is that lldb
+    # shows no locals or types in a darwin debug build.
+    #
+    # Both override `[profile.dev]`'s `debug = "full"` and
+    # `split-debuginfo = "off"` for this target only — rustc takes the
+    # last `-C` of each, and these come after the profile's. Setting
+    # RUSTFLAGS in the environment replaces this whole array (cargo
+    # does not merge them), which silently loses `file:line` on darwin.
+    "-C", "split-debuginfo=packed",
+    "-C", "debuginfo=line-tables-only",
+]
